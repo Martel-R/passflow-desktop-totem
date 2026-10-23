@@ -16,14 +16,13 @@ namespace PassFlowTotem
     public partial class MainWindow : Window
     {
         private readonly ConfigService _configService;
-        private readonly ApiService _apiService;
+        private readonly FirestoreService _firestoreService;
         private readonly ThermalPrinterService _printerService;
 
         private DeviceConfig _device;
         private TicketPrintConfig _printConfig = new();
         private List<Category> _categories = new();
         private List<Service> _services = new();
-        private List<TicketType> _ticketTypes = new();
 
         private Category? _selectedCategory;
         private Service? _selectedService;
@@ -41,7 +40,7 @@ namespace PassFlowTotem
             InitializeComponent();
 
             _configService = new ConfigService();
-            _apiService = new ApiService();
+            _firestoreService = new FirestoreService();
             _printerService = new ThermalPrinterService();
 
             _device = _configService.Load();
@@ -51,8 +50,8 @@ namespace PassFlowTotem
             _clockTimer.Tick += (s, e) => TxtClock.Text = DateTime.Now.ToString("HH:mm:ss");
             _clockTimer.Start();
 
-            // Timer de Pareamento (Pooling a cada 3 segundos)
-            _pairingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            // Timer de Pareamento (Pooling a cada 2.5 segundos)
+            _pairingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.5) };
             _pairingTimer.Tick += async (s, e) => await CheckPairingStatusAsync();
 
             // Timer de Inatividade (Retorna ao início após 30 segundos sem toque)
@@ -95,22 +94,18 @@ namespace PassFlowTotem
             TxtPairingPin.Text = _device.Pin;
             TxtPairingStatus.Text = "Aguardando confirmação do painel central...";
 
-            // Registra o PIN no servidor e inicia o monitoramento
-            await _apiService.CheckOrRegisterPairingAsync(_device.ServerUrl, _device.Pin);
+            // Registra o PIN na coleção 'devices' do Firestore para aparecer no Admin
+            await _firestoreService.CheckOrRegisterPinAsync(_device.Pin, _device);
             _pairingTimer.Start();
         }
 
         private async Task CheckPairingStatusAsync()
         {
-            var res = await _apiService.CheckOrRegisterPairingAsync(_device.ServerUrl, _device.Pin);
-            if (res != null && res.Status == "paired" && !string.IsNullOrWhiteSpace(res.OrganizationId) && !string.IsNullOrWhiteSpace(res.UnitId))
+            var paired = await _firestoreService.CheckOrRegisterPinAsync(_device.Pin, _device);
+            if (paired != null && paired.IsPaired)
             {
                 _pairingTimer.Stop();
-
-                _device.IsPaired = true;
-                _device.OrganizationId = res.OrganizationId;
-                _device.UnitId = res.UnitId;
-                _device.AllowedServices = res.AllowedServices ?? new List<string>();
+                _device = paired;
                 _configService.Save(_device);
 
                 TxtPairingStatus.Text = "✓ Pareamento confirmado pelo servidor!";
@@ -132,7 +127,7 @@ namespace PassFlowTotem
             _device.Pin = GenerateNewPin();
             _configService.Save(_device);
             TxtPairingPin.Text = _device.Pin;
-            await _apiService.CheckOrRegisterPairingAsync(_device.ServerUrl, _device.Pin);
+            await _firestoreService.CheckOrRegisterPinAsync(_device.Pin, _device);
         }
 
         // =========================================================================
@@ -155,30 +150,19 @@ namespace PassFlowTotem
 
         private async Task LoadServerDataAsync()
         {
-            var data = await _apiService.LoadKioskDataAsync(_device.ServerUrl, _device.OrganizationId, _device.UnitId);
-            if (data != null && data.Success)
-            {
-                if (data.Organization != null)
-                {
-                    _device.OrganizationName = data.Organization.Name;
-                    TxtOrgName.Text = _device.OrganizationName;
-                }
-                if (data.Unit != null)
-                {
-                    _device.UnitName = data.Unit.Name;
-                    TxtUnitName.Text = _device.UnitName;
-                }
-                if (data.TicketPrintConfig != null)
-                {
-                    _printConfig = data.TicketPrintConfig;
-                }
+            var (categories, services, printConfig, orgName, unitName) =
+                await _firestoreService.LoadKioskDataAsync(_device.OrganizationId, _device.UnitId);
 
-                _categories = data.Categories ?? new();
-                _services = data.Services ?? new();
-                _ticketTypes = data.TicketTypes ?? new();
+            _categories = categories;
+            _services = services;
+            _printConfig = printConfig;
+            _device.OrganizationName = orgName;
+            _device.UnitName = unitName;
 
-                _configService.Save(_device);
-            }
+            TxtOrgName.Text = orgName;
+            TxtUnitName.Text = unitName;
+
+            _configService.Save(_device);
         }
 
         private void ResetKioskToHome()
@@ -215,7 +199,6 @@ namespace PassFlowTotem
 
             PanelCategories.Children.Clear();
 
-            // Se não houver categorias carregadas, exibe botões padrões
             var displayCategories = _categories.Count > 0
                 ? _categories
                 : new List<Category>
@@ -338,60 +321,45 @@ namespace PassFlowTotem
         {
             _inactivityTimer.Stop();
 
-            var serviceId = _selectedService?.Id ?? "srv-1";
-            var ticketType = _ticketTypes.FirstOrDefault(t => t.Id.Contains(typeCode, StringComparison.OrdinalIgnoreCase) || t.Prefix == (typeCode == "preferencial" ? "P" : "A"));
-            var ticketTypeId = ticketType?.Id ?? (typeCode == "preferencial" ? "type-pref" : "type-normal");
+            var service = _selectedService ?? new Service { Id = "srv-1", Name = "Atendimento Geral" };
 
-            // Emite o ticket via API do PassFlow
-            var ticket = await _apiService.IssueTicketAsync(
+            // Emite e grava o ticket diretamente no Firestore do PassFlow
+            var ticket = await _firestoreService.CreateTicketAsync(
                 _device.ServerUrl,
                 _device.OrganizationId,
                 _device.UnitId,
-                serviceId,
-                ticketTypeId,
-                _selectedSubService?.Id
+                service,
+                typeCode,
+                typeName,
+                _selectedSubService
             );
 
-            if (ticket != null)
+            // 1. Exibe tela de sucesso
+            TxtSuccessTicketNumber.Text = ticket.Number;
+            TxtSuccessService.Text = ticket.ServiceName;
+            TxtSuccessType.Text = $"[{typeName.ToUpper()}]";
+
+            KioskPanel.Visibility = Visibility.Collapsed;
+            SuccessPanel.Visibility = Visibility.Visible;
+
+            // 2. Dispara a impressão silenciosa na impressora padrão do Windows
+            _ = Task.Run(() =>
             {
-                // Sobrescreve nome caso a API venha vazia
-                if (string.IsNullOrWhiteSpace(ticket.ServiceName) && _selectedService != null)
+                try
                 {
-                    ticket.ServiceName = _selectedService.Name;
+                    _printerService.PrintTicket(ticket, _printConfig, _device);
                 }
-                if (_selectedSubService != null)
+                catch (Exception ex)
                 {
-                    ticket.SubServiceName = _selectedSubService.Name;
+                    Console.WriteLine($"Erro na impressão: {ex.Message}");
                 }
-                ticket.TicketTypeName = typeName;
+            });
 
-                // 1. Exibe tela de sucesso
-                TxtSuccessTicketNumber.Text = ticket.Number;
-                TxtSuccessService.Text = ticket.ServiceName;
-                TxtSuccessType.Text = $"[{typeName.ToUpper()}]";
-
-                KioskPanel.Visibility = Visibility.Collapsed;
-                SuccessPanel.Visibility = Visibility.Visible;
-
-                // 2. Dispara a impressão silenciosa na impressora padrão do Windows
-                _ = Task.Run(() =>
-                {
-                    try
-                    {
-                        _printerService.PrintTicket(ticket, _printConfig, _device);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Erro na impressão: {ex.Message}");
-                    }
-                });
-
-                // 3. Retorna automaticamente para o início após 5 segundos
-                await Task.Delay(5000);
-                SuccessPanel.Visibility = Visibility.Collapsed;
-                ResetKioskToHome();
-                KioskPanel.Visibility = Visibility.Visible;
-            }
+            // 3. Retorna automaticamente para o início após 5 segundos
+            await Task.Delay(5000);
+            SuccessPanel.Visibility = Visibility.Collapsed;
+            ResetKioskToHome();
+            KioskPanel.Visibility = Visibility.Visible;
         }
 
         private Button CreateTouchCard(string title, string description, string icon, Action onClick)
@@ -455,7 +423,7 @@ namespace PassFlowTotem
                 "users" or "user" => "👥",
                 "dollarsign" or "dollar" or "finance" => "💰",
                 "zap" or "fast" or "speed" => "⚡",
-                "stethoscope" or "health" => "🩺",
+                "stethoscope" or "health" or "squareactivity" or "smile" => "🩺",
                 "filetext" or "document" => "📄",
                 "creditcard" or "card" => "💳",
                 "shoppingbag" or "store" => "🛍️",
@@ -494,7 +462,6 @@ namespace PassFlowTotem
 
         private void Window_KeyDown(object sender, KeyEventArgs e)
         {
-            // Atalho F12 ou Ctrl+Alt+S para abrir Configurações do Totem
             if (e.Key == Key.F12 || ((Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0 && e.Key == Key.S))
             {
                 OpenAdminModal();
@@ -536,7 +503,6 @@ namespace PassFlowTotem
         {
             TxtServerInput.Text = _device.ServerUrl;
 
-            // Carrega impressoras instaladas no Windows
             CmbPrinters.Items.Clear();
             CmbPrinters.Items.Add("🖨️ (Impressora Padrão do Windows)");
 
@@ -569,7 +535,7 @@ namespace PassFlowTotem
             }
             else
             {
-                _device.PrinterName = ""; // Padrão
+                _device.PrinterName = "";
             }
 
             _configService.Save(_device);
