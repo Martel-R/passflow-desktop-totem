@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using MahApps.Metro.IconPacks;
 using PassFlowTotem.Models;
 using PassFlowTotem.Services;
 
@@ -194,7 +195,7 @@ namespace PassFlowTotem
             _inactivityTimer.Start();
         }
 
-        // PASSO 1: CATEGORIAS (DINÂMICAS)
+        // PASSO 1: CATEGORIAS (DINÂMICAS COM ÍCONES LUCIDE NATIVOS)
         private void ShowCategoriesStep()
         {
             RestartInactivityTimer();
@@ -212,7 +213,6 @@ namespace PassFlowTotem
 
             foreach (var cat in _categories)
             {
-                // Conta quantos serviços pertencem a esta categoria
                 var srvCount = _services.Count(s => s.CategoryId == cat.Id);
                 var desc = srvCount > 0 ? $"{srvCount} serviço(s) disponível(is)" : "Toque para ver os serviços";
 
@@ -225,7 +225,7 @@ namespace PassFlowTotem
             }
         }
 
-        // PASSO 2: SERVIÇOS (DINÂMICOS)
+        // PASSO 2: SERVIÇOS (DINÂMICOS COM ÍCONES LUCIDE NATIVOS)
         private void ShowServicesStep()
         {
             RestartInactivityTimer();
@@ -243,7 +243,6 @@ namespace PassFlowTotem
 
             PanelServices.Children.Clear();
 
-            // Filtra serviços pela categoria selecionada (se houver) e pelos serviços permitidos no pareamento do totem
             var availableServices = _services
                 .Where(s => _selectedCategory == null || s.CategoryId == _selectedCategory.Id || string.IsNullOrWhiteSpace(s.CategoryId))
                 .Where(s => _device.AllowedServices == null || _device.AllowedServices.Count == 0 || _device.AllowedServices.Contains(s.Id))
@@ -251,7 +250,7 @@ namespace PassFlowTotem
 
             if (availableServices.Count == 0)
             {
-                availableServices.Add(new Service { Id = "srv-1", Name = "Atendimento Geral" });
+                availableServices.Add(new Service { Id = "srv-1", Name = "Atendimento Geral", Icon = "Users" });
             }
 
             foreach (var srv in availableServices)
@@ -295,7 +294,7 @@ namespace PassFlowTotem
             var subServices = _selectedService?.SubServices ?? new List<SubService>();
             foreach (var sub in subServices)
             {
-                var btn = CreateTouchCard(sub.Name, sub.Description ?? "Opção de atendimento", "", () =>
+                var btn = CreateTouchCard(sub.Name, sub.Description ?? "Opção de atendimento", _selectedService?.Icon ?? "FileText", () =>
                 {
                     _selectedSubService = sub;
                     ShowTicketTypesStep();
@@ -304,7 +303,7 @@ namespace PassFlowTotem
             }
         }
 
-        // PASSO 4: TIPOS DE SENHA (DINÂMICOS CONFORME CONFIGURADO NO PASSFLOW)
+        // PASSO 4: TIPOS DE SENHA (DINÂMICOS COM ÍCONES LUCIDE NATIVOS)
         private void ShowTicketTypesStep()
         {
             RestartInactivityTimer();
@@ -322,8 +321,10 @@ namespace PassFlowTotem
 
             foreach (var tt in _ticketTypes)
             {
-                var isPriority = tt.PriorityWeight > 1 || tt.Prefix.Equals("P", StringComparison.OrdinalIgnoreCase);
+                var isPriority = tt.PriorityWeight > 1 || tt.Prefix.Equals("P", StringComparison.OrdinalIgnoreCase) || tt.Prefix.Equals("U", StringComparison.OrdinalIgnoreCase);
                 var borderBrush = isPriority ? new SolidColorBrush(Color.FromRgb(245, 158, 11)) : new SolidColorBrush(Color.FromRgb(59, 130, 246));
+                var iconColor = isPriority ? new SolidColorBrush(Color.FromRgb(245, 158, 11)) : new SolidColorBrush(Color.FromRgb(56, 189, 248));
+
                 var desc = !string.IsNullOrWhiteSpace(tt.Description)
                     ? tt.Description
                     : (isPriority ? "Atendimento prioritário legal" : "Atendimento convencional por ordem de chegada");
@@ -331,7 +332,7 @@ namespace PassFlowTotem
                 var btn = CreateTouchCard(tt.Name, desc, tt.Icon, async () =>
                 {
                     await GenerateAndPrintTicketAsync(tt);
-                }, borderBrush, tt.Prefix);
+                }, borderBrush, tt.Prefix, iconColor);
 
                 PanelTicketTypesWrap.Children.Add(btn);
             }
@@ -381,7 +382,14 @@ namespace PassFlowTotem
             KioskPanel.Visibility = Visibility.Visible;
         }
 
-        private Button CreateTouchCard(string title, string description, string icon, Action onClick, Brush? customBorder = null, string? badgePrefix = null)
+        private Button CreateTouchCard(
+            string title, 
+            string description, 
+            string iconName, 
+            Action onClick, 
+            Brush? customBorder = null, 
+            string? badgePrefix = null,
+            Brush? customIconBrush = null)
         {
             var btn = new Button
             {
@@ -400,14 +408,10 @@ namespace PassFlowTotem
                 VerticalAlignment = VerticalAlignment.Center
             };
 
-            var emoji = GetIconEmoji(icon);
-            var txtEmoji = new TextBlock
-            {
-                Text = emoji,
-                FontSize = 38,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 10)
-            };
+            // Renderiza o ícone Lucide nativo vetorial idêntico ao web
+            var iconBrush = customIconBrush ?? new SolidColorBrush(Color.FromRgb(56, 189, 248)); // Sky-400
+            var iconControl = CreateLucideIcon(iconName, 44, iconBrush);
+            stack.Children.Add(iconControl);
 
             var txtTitle = new TextBlock
             {
@@ -429,7 +433,6 @@ namespace PassFlowTotem
                 Margin = new Thickness(0, 6, 0, 0)
             };
 
-            stack.Children.Add(txtEmoji);
             stack.Children.Add(txtTitle);
             stack.Children.Add(txtDesc);
 
@@ -453,22 +456,43 @@ namespace PassFlowTotem
             return btn;
         }
 
-        private string GetIconEmoji(string? icon)
+        /// <summary>
+        /// Mapeia e cria o ícone vetorial oficial do Lucide idêntico ao Lucide-React do web.
+        /// </summary>
+        private FrameworkElement CreateLucideIcon(string? name, double size = 44, Brush? foreground = null)
         {
-            if (string.IsNullOrWhiteSpace(icon)) return "📋";
-            return icon.ToLower() switch
+            var icon = new PackIconLucide
             {
-                "users" or "user" => "👥",
-                "dollarsign" or "dollar" or "finance" => "💰",
-                "zap" or "fast" or "speed" => "⚡",
-                "stethoscope" or "health" or "squareactivity" or "smile" or "heart" or "activity" => "🩺",
-                "filetext" or "document" => "📄",
-                "creditcard" or "card" => "💳",
-                "shoppingbag" or "store" => "🛍️",
-                "wrench" or "tool" => "🔧",
-                "alertcircle" or "alert" => "🚨",
-                _ => "📋"
+                Width = size,
+                Height = size,
+                Foreground = foreground ?? new SolidColorBrush(Color.FromRgb(56, 189, 248)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 10)
             };
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                var clean = name.Replace("-", "").Replace("_", "").Trim();
+
+                // Mapeamentos comuns entre Lucide React e o Enum do PackIconLucide
+                if (clean.Equals("SquareActivity", StringComparison.OrdinalIgnoreCase))
+                    clean = "Activity";
+                else if (clean.Equals("Stethoscope", StringComparison.OrdinalIgnoreCase))
+                    clean = "Stethoscope";
+                else if (clean.Equals("Blocks", StringComparison.OrdinalIgnoreCase))
+                    clean = "Blocks";
+
+                if (Enum.TryParse<PackIconLucideKind>(clean, true, out var kind))
+                {
+                    icon.Kind = kind;
+                    return icon;
+                }
+            }
+
+            // Fallback se não encontrar o nome exato
+            icon.Kind = PackIconLucideKind.Layers;
+            return icon;
         }
 
         private void BtnBack_Click(object sender, RoutedEventArgs e)
