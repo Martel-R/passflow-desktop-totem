@@ -9,9 +9,14 @@
     <RootNamespace>PassFlowTotem</RootNamespace>
     <AssemblyName>PassFlowTotem</AssemblyName>
     <ApplicationTitle>PassFlow Totem de Autoatendimento</ApplicationTitle>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="app.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="MahApps.Metro.IconPacks.Lucide" Version="6.2.1" />
