@@ -1,0 +1,639 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing.Printing;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
+using PassFlowTotem.Models;
+using PassFlowTotem.Services;
+
+namespace PassFlowTotem
+{
+    public partial class MainWindow : Window
+    {
+        private readonly ConfigService _configService;
+        private readonly ApiService _apiService;
+        private readonly ThermalPrinterService _printerService;
+
+        private DeviceConfig _device;
+        private TicketPrintConfig _printConfig = new();
+        private List<Category> _categories = new();
+        private List<Service> _services = new();
+        private List<TicketType> _ticketTypes = new();
+
+        private Category? _selectedCategory;
+        private Service? _selectedService;
+        private SubService? _selectedSubService;
+
+        private readonly DispatcherTimer _clockTimer;
+        private readonly DispatcherTimer _pairingTimer;
+        private readonly DispatcherTimer _inactivityTimer;
+
+        private int _logoClickCount = 0;
+        private DateTime _lastLogoClick = DateTime.MinValue;
+
+        public MainWindow()
+        {
+            InitializeComponent();
+
+            _configService = new ConfigService();
+            _apiService = new ApiService();
+            _printerService = new ThermalPrinterService();
+
+            _device = _configService.Load();
+
+            // Relógio em tempo real
+            _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _clockTimer.Tick += (s, e) => TxtClock.Text = DateTime.Now.ToString("HH:mm:ss");
+            _clockTimer.Start();
+
+            // Timer de Pareamento (Pooling a cada 3 segundos)
+            _pairingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            _pairingTimer.Tick += async (s, e) => await CheckPairingStatusAsync();
+
+            // Timer de Inatividade (Retorna ao início após 30 segundos sem toque)
+            _inactivityTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            _inactivityTimer.Tick += (s, e) =>
+            {
+                _inactivityTimer.Stop();
+                ResetKioskToHome();
+            };
+        }
+
+        private async void Window_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (_device.IsPaired && !string.IsNullOrWhiteSpace(_device.OrganizationId) && !string.IsNullOrWhiteSpace(_device.UnitId))
+            {
+                await StartKioskModeAsync();
+            }
+            else
+            {
+                await StartPairingModeAsync();
+            }
+        }
+
+        // =========================================================================
+        // FLUXO 1: PAREAMENTO DO TOTEM
+        // =========================================================================
+
+        private async Task StartPairingModeAsync()
+        {
+            PairingPanel.Visibility = Visibility.Visible;
+            KioskPanel.Visibility = Visibility.Collapsed;
+            SuccessPanel.Visibility = Visibility.Collapsed;
+
+            if (string.IsNullOrWhiteSpace(_device.Pin) || _device.Pin.Length != 6)
+            {
+                _device.Pin = GenerateNewPin();
+                _configService.Save(_device);
+            }
+
+            TxtPairingPin.Text = _device.Pin;
+            TxtPairingStatus.Text = "Aguardando confirmação do painel central...";
+
+            // Registra o PIN no servidor e inicia o monitoramento
+            await _apiService.CheckOrRegisterPairingAsync(_device.ServerUrl, _device.Pin);
+            _pairingTimer.Start();
+        }
+
+        private async Task CheckPairingStatusAsync()
+        {
+            var res = await _apiService.CheckOrRegisterPairingAsync(_device.ServerUrl, _device.Pin);
+            if (res != null && res.Status == "paired" && !string.IsNullOrWhiteSpace(res.OrganizationId) && !string.IsNullOrWhiteSpace(res.UnitId))
+            {
+                _pairingTimer.Stop();
+
+                _device.IsPaired = true;
+                _device.OrganizationId = res.OrganizationId;
+                _device.UnitId = res.UnitId;
+                _device.AllowedServices = res.AllowedServices ?? new List<string>();
+                _configService.Save(_device);
+
+                TxtPairingStatus.Text = "✓ Pareamento confirmado pelo servidor!";
+                await Task.Delay(1000);
+
+                await StartKioskModeAsync();
+            }
+        }
+
+        private string GenerateNewPin()
+        {
+            const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+            var random = new Random();
+            return new string(Enumerable.Repeat(chars, 6).Select(s => s[random.Next(s.Length)]).ToArray());
+        }
+
+        private async void BtnRefreshPin_Click(object sender, RoutedEventArgs e)
+        {
+            _device.Pin = GenerateNewPin();
+            _configService.Save(_device);
+            TxtPairingPin.Text = _device.Pin;
+            await _apiService.CheckOrRegisterPairingAsync(_device.ServerUrl, _device.Pin);
+        }
+
+        // =========================================================================
+        // FLUXO 2: MODO QUIOSQUE / AUTOATENDIMENTO
+        // =========================================================================
+
+        private async Task StartKioskModeAsync()
+        {
+            _pairingTimer.Stop();
+            PairingPanel.Visibility = Visibility.Collapsed;
+            SuccessPanel.Visibility = Visibility.Collapsed;
+            KioskPanel.Visibility = Visibility.Visible;
+
+            TxtOrgName.Text = _device.OrganizationName;
+            TxtUnitName.Text = _device.UnitName;
+
+            await LoadServerDataAsync();
+            ResetKioskToHome();
+        }
+
+        private async Task LoadServerDataAsync()
+        {
+            var data = await _apiService.LoadKioskDataAsync(_device.ServerUrl, _device.OrganizationId, _device.UnitId);
+            if (data != null && data.Success)
+            {
+                if (data.Organization != null)
+                {
+                    _device.OrganizationName = data.Organization.Name;
+                    TxtOrgName.Text = _device.OrganizationName;
+                }
+                if (data.Unit != null)
+                {
+                    _device.UnitName = data.Unit.Name;
+                    TxtUnitName.Text = _device.UnitName;
+                }
+                if (data.TicketPrintConfig != null)
+                {
+                    _printConfig = data.TicketPrintConfig;
+                }
+
+                _categories = data.Categories ?? new();
+                _services = data.Services ?? new();
+                _ticketTypes = data.TicketTypes ?? new();
+
+                _configService.Save(_device);
+            }
+        }
+
+        private void ResetKioskToHome()
+        {
+            _selectedCategory = null;
+            _selectedService = null;
+            _selectedSubService = null;
+
+            BtnBack.Visibility = Visibility.Collapsed;
+            BtnCancel.Visibility = Visibility.Collapsed;
+
+            ShowCategoriesStep();
+        }
+
+        private void RestartInactivityTimer()
+        {
+            _inactivityTimer.Stop();
+            _inactivityTimer.Start();
+        }
+
+        // PASSO 1: CATEGORIAS
+        private void ShowCategoriesStep()
+        {
+            RestartInactivityTimer();
+
+            TxtStepTitle.Text = "Passo 1: Selecione a Categoria de Atendimento";
+            PanelCategories.Visibility = Visibility.Visible;
+            PanelServices.Visibility = Visibility.Collapsed;
+            PanelSubServices.Visibility = Visibility.Collapsed;
+            PanelTicketTypes.Visibility = Visibility.Collapsed;
+
+            BtnBack.Visibility = Visibility.Collapsed;
+            BtnCancel.Visibility = Visibility.Collapsed;
+
+            PanelCategories.Children.Clear();
+
+            // Se não houver categorias carregadas, exibe botões padrões
+            var displayCategories = _categories.Count > 0
+                ? _categories
+                : new List<Category>
+                {
+                    new() { Id = "cat-geral", Name = "Atendimento Geral", Icon = "Users" },
+                    new() { Id = "cat-fin", Name = "Financeiro / Caixa", Icon = "DollarSign" },
+                    new() { Id = "cat-rap", Name = "Balcão Rápido", Icon = "Zap" }
+                };
+
+            foreach (var cat in displayCategories)
+            {
+                var btn = CreateTouchCard(cat.Name, "Toque para ver os serviços", cat.Icon, () =>
+                {
+                    _selectedCategory = cat;
+                    ShowServicesStep();
+                });
+                PanelCategories.Children.Add(btn);
+            }
+        }
+
+        // PASSO 2: SERVIÇOS
+        private void ShowServicesStep()
+        {
+            RestartInactivityTimer();
+
+            TxtStepTitle.Text = $"Passo 2: Selecione o Serviço ({_selectedCategory?.Name})";
+            PanelCategories.Visibility = Visibility.Collapsed;
+            PanelServices.Visibility = Visibility.Visible;
+            PanelSubServices.Visibility = Visibility.Collapsed;
+            PanelTicketTypes.Visibility = Visibility.Collapsed;
+
+            BtnBack.Visibility = Visibility.Visible;
+            BtnCancel.Visibility = Visibility.Visible;
+
+            PanelServices.Children.Clear();
+
+            var availableServices = _services
+                .Where(s => _selectedCategory == null || s.CategoryId == _selectedCategory.Id || _categories.Count == 0)
+                .Where(s => _device.AllowedServices.Count == 0 || _device.AllowedServices.Contains(s.Id))
+                .ToList();
+
+            if (availableServices.Count == 0)
+            {
+                availableServices.Add(new Service { Id = "srv-1", Name = "Atendimento Geral", CategoryId = _selectedCategory?.Id ?? "" });
+                availableServices.Add(new Service { Id = "srv-2", Name = "Informações e Dúvidas", CategoryId = _selectedCategory?.Id ?? "" });
+            }
+
+            foreach (var srv in availableServices)
+            {
+                var btn = CreateTouchCard(srv.Name, srv.SubServices?.Count > 0 ? "Possui opções adicionais" : "Emitir senha para este serviço", srv.Icon, () =>
+                {
+                    _selectedService = srv;
+                    if (srv.SubServices != null && srv.SubServices.Count > 0)
+                    {
+                        ShowSubServicesStep();
+                    }
+                    else
+                    {
+                        ShowTicketTypesStep();
+                    }
+                });
+                PanelServices.Children.Add(btn);
+            }
+        }
+
+        // PASSO 3: SUBSERVIÇOS (OPCIONAL)
+        private void ShowSubServicesStep()
+        {
+            RestartInactivityTimer();
+
+            TxtStepTitle.Text = $"Passo 3: Especifique o Atendimento ({_selectedService?.Name})";
+            PanelCategories.Visibility = Visibility.Collapsed;
+            PanelServices.Visibility = Visibility.Collapsed;
+            PanelSubServices.Visibility = Visibility.Visible;
+            PanelTicketTypes.Visibility = Visibility.Collapsed;
+
+            BtnBack.Visibility = Visibility.Visible;
+            BtnCancel.Visibility = Visibility.Visible;
+
+            PanelSubServices.Children.Clear();
+
+            var subServices = _selectedService?.SubServices ?? new List<SubService>();
+            foreach (var sub in subServices)
+            {
+                var btn = CreateTouchCard(sub.Name, sub.Description ?? "Opção de atendimento", "", () =>
+                {
+                    _selectedSubService = sub;
+                    ShowTicketTypesStep();
+                });
+                PanelSubServices.Children.Add(btn);
+            }
+        }
+
+        // PASSO 4: TIPO DE ATENDIMENTO (CONVENCIONAL / PRIORITÁRIO)
+        private void ShowTicketTypesStep()
+        {
+            RestartInactivityTimer();
+
+            TxtStepTitle.Text = "Passo 4: Tipo de Atendimento";
+            PanelCategories.Visibility = Visibility.Collapsed;
+            PanelServices.Visibility = Visibility.Collapsed;
+            PanelSubServices.Visibility = Visibility.Collapsed;
+            PanelTicketTypes.Visibility = Visibility.Visible;
+
+            BtnBack.Visibility = Visibility.Visible;
+            BtnCancel.Visibility = Visibility.Visible;
+        }
+
+        private async void BtnNormalTicket_Click(object sender, RoutedEventArgs e)
+        {
+            await GenerateAndPrintTicketAsync("convencional", "Normal / Convencional");
+        }
+
+        private async void BtnPriorityTicket_Click(object sender, RoutedEventArgs e)
+        {
+            await GenerateAndPrintTicketAsync("preferencial", "Preferencial / Prioritário");
+        }
+
+        private async Task GenerateAndPrintTicketAsync(string typeCode, string typeName)
+        {
+            _inactivityTimer.Stop();
+
+            var serviceId = _selectedService?.Id ?? "srv-1";
+            var ticketType = _ticketTypes.FirstOrDefault(t => t.Id.Contains(typeCode, StringComparison.OrdinalIgnoreCase) || t.Prefix == (typeCode == "preferencial" ? "P" : "A"));
+            var ticketTypeId = ticketType?.Id ?? (typeCode == "preferencial" ? "type-pref" : "type-normal");
+
+            // Emite o ticket via API do PassFlow
+            var ticket = await _apiService.IssueTicketAsync(
+                _device.ServerUrl,
+                _device.OrganizationId,
+                _device.UnitId,
+                serviceId,
+                ticketTypeId,
+                _selectedSubService?.Id
+            );
+
+            if (ticket != null)
+            {
+                // Sobrescreve nome caso a API venha vazia
+                if (string.IsNullOrWhiteSpace(ticket.ServiceName) && _selectedService != null)
+                {
+                    ticket.ServiceName = _selectedService.Name;
+                }
+                if (_selectedSubService != null)
+                {
+                    ticket.SubServiceName = _selectedSubService.Name;
+                }
+                ticket.TicketTypeName = typeName;
+
+                // 1. Exibe tela de sucesso
+                TxtSuccessTicketNumber.Text = ticket.Number;
+                TxtSuccessService.Text = ticket.ServiceName;
+                TxtSuccessType.Text = $"[{typeName.ToUpper()}]";
+
+                KioskPanel.Visibility = Visibility.Collapsed;
+                SuccessPanel.Visibility = Visibility.Visible;
+
+                // 2. Dispara a impressão silenciosa na impressora padrão do Windows
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        _printerService.PrintTicket(ticket, _printConfig, _device);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Erro na impressão: {ex.Message}");
+                    }
+                });
+
+                // 3. Retorna automaticamente para o início após 5 segundos
+                await Task.Delay(5000);
+                SuccessPanel.Visibility = Visibility.Collapsed;
+                ResetKioskToHome();
+                KioskPanel.Visibility = Visibility.Visible;
+            }
+        }
+
+        private Button CreateTouchCard(string title, string description, string icon, Action onClick)
+        {
+            var btn = new Button
+            {
+                Style = (Style)FindResource("TouchCardButton"),
+                Margin = new Thickness(10)
+            };
+
+            var stack = new StackPanel
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var emoji = GetIconEmoji(icon);
+            var txtEmoji = new TextBlock
+            {
+                Text = emoji,
+                FontSize = 38,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+
+            var txtTitle = new TextBlock
+            {
+                Text = title,
+                FontSize = 18,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                TextAlignment = TextAlignment.Center,
+                TextWrapping = TextWrapping.Wrap
+            };
+
+            var txtDesc = new TextBlock
+            {
+                Text = description,
+                FontSize = 12,
+                Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                TextAlignment = TextAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 0, 0)
+            };
+
+            stack.Children.Add(txtEmoji);
+            stack.Children.Add(txtTitle);
+            stack.Children.Add(txtDesc);
+
+            btn.Content = stack;
+            btn.Click += (s, e) => onClick();
+
+            return btn;
+        }
+
+        private string GetIconEmoji(string? icon)
+        {
+            if (string.IsNullOrWhiteSpace(icon)) return "📋";
+            return icon.ToLower() switch
+            {
+                "users" or "user" => "👥",
+                "dollarsign" or "dollar" or "finance" => "💰",
+                "zap" or "fast" or "speed" => "⚡",
+                "stethoscope" or "health" => "🩺",
+                "filetext" or "document" => "📄",
+                "creditcard" or "card" => "💳",
+                "shoppingbag" or "store" => "🛍️",
+                "wrench" or "tool" => "🔧",
+                _ => "📋"
+            };
+        }
+
+        private void BtnBack_Click(object sender, RoutedEventArgs e)
+        {
+            if (PanelTicketTypes.Visibility == Visibility.Visible)
+            {
+                if (_selectedService?.SubServices != null && _selectedService.SubServices.Count > 0)
+                    ShowSubServicesStep();
+                else
+                    ShowServicesStep();
+            }
+            else if (PanelSubServices.Visibility == Visibility.Visible)
+            {
+                ShowServicesStep();
+            }
+            else if (PanelServices.Visibility == Visibility.Visible)
+            {
+                ShowCategoriesStep();
+            }
+        }
+
+        private void BtnCancel_Click(object sender, RoutedEventArgs e)
+        {
+            ResetKioskToHome();
+        }
+
+        // =========================================================================
+        // ATALHO & MODAL DE CONFIGURAÇÃO / ADMIN
+        // =========================================================================
+
+        private void Window_KeyDown(object sender, KeyEventArgs e)
+        {
+            // Atalho F12 ou Ctrl+Alt+S para abrir Configurações do Totem
+            if (e.Key == Key.F12 || ((Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0 && e.Key == Key.S))
+            {
+                OpenAdminModal();
+            }
+            else if (e.Key == Key.Escape)
+            {
+                if (AdminModal.Visibility == Visibility.Visible)
+                {
+                    AdminModal.Visibility = Visibility.Collapsed;
+                }
+            }
+        }
+
+        private void Logo_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            var now = DateTime.Now;
+            if ((now - _lastLogoClick).TotalSeconds < 2)
+            {
+                _logoClickCount++;
+                if (_logoClickCount >= 5)
+                {
+                    _logoClickCount = 0;
+                    OpenAdminModal();
+                }
+            }
+            else
+            {
+                _logoClickCount = 1;
+            }
+            _lastLogoClick = now;
+        }
+
+        private void BtnServerConfig_Click(object sender, RoutedEventArgs e)
+        {
+            OpenAdminModal();
+        }
+
+        private void OpenAdminModal()
+        {
+            TxtServerInput.Text = _device.ServerUrl;
+
+            // Carrega impressoras instaladas no Windows
+            CmbPrinters.Items.Clear();
+            CmbPrinters.Items.Add("🖨️ (Impressora Padrão do Windows)");
+
+            int selectedIndex = 0;
+            int i = 1;
+            foreach (string printer in PrinterSettings.InstalledPrinters)
+            {
+                CmbPrinters.Items.Add(printer);
+                if (!string.IsNullOrWhiteSpace(_device.PrinterName) && printer.Equals(_device.PrinterName, StringComparison.OrdinalIgnoreCase))
+                {
+                    selectedIndex = i;
+                }
+                i++;
+            }
+            CmbPrinters.SelectedIndex = selectedIndex;
+
+            AdminModal.Visibility = Visibility.Visible;
+        }
+
+        private void BtnSaveAdmin_Click(object sender, RoutedEventArgs e)
+        {
+            if (!string.IsNullOrWhiteSpace(TxtServerInput.Text))
+            {
+                _device.ServerUrl = TxtServerInput.Text.Trim();
+            }
+
+            if (CmbPrinters.SelectedIndex > 0)
+            {
+                _device.PrinterName = CmbPrinters.SelectedItem.ToString() ?? "";
+            }
+            else
+            {
+                _device.PrinterName = ""; // Padrão
+            }
+
+            _configService.Save(_device);
+            AdminModal.Visibility = Visibility.Collapsed;
+
+            MessageBox.Show("Configurações salvas com sucesso!", "PassFlow Totem", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        private void BtnCloseAdmin_Click(object sender, RoutedEventArgs e)
+        {
+            AdminModal.Visibility = Visibility.Collapsed;
+        }
+
+        private void BtnTestPrint_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var fakeTicket = new GeneratedTicket
+                {
+                    Id = "test-1",
+                    Number = "TST-099",
+                    ServiceName = "Teste de Impressão Térmica",
+                    TicketTypeName = "Convencional",
+                    CreatedAt = DateTime.Now,
+                    QueuePosition = 1,
+                    VirtualQueueUrl = $"{_device.ServerUrl}/my-ticket?ticket=TST-099"
+                };
+
+                var testDevice = new DeviceConfig
+                {
+                    OrganizationName = _device.OrganizationName,
+                    UnitName = _device.UnitName,
+                    PrinterName = CmbPrinters.SelectedIndex > 0 ? CmbPrinters.SelectedItem.ToString() ?? "" : ""
+                };
+
+                _printerService.PrintTicket(fakeTicket, _printConfig, testDevice);
+                MessageBox.Show("Comando de teste de impressão enviado com sucesso à impressora!", "Impressão", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Falha ao imprimir na impressora selecionada:\n\n{ex.Message}", "Erro de Impressão", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async void BtnUnpair_Click(object sender, RoutedEventArgs e)
+        {
+            var confirm = MessageBox.Show(
+                "Tem certeza que deseja desvincular este Totem?\n\nEle voltará para a tela inicial de pareamento com código PIN.",
+                "Desvincular Totem",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning
+            );
+
+            if (confirm == MessageBoxResult.Yes)
+            {
+                _device.IsPaired = false;
+                _device.Pin = "";
+                _device.OrganizationId = "";
+                _device.UnitId = "";
+                _configService.Save(_device);
+
+                AdminModal.Visibility = Visibility.Collapsed;
+                await StartPairingModeAsync();
+            }
+        }
+    }
+}
