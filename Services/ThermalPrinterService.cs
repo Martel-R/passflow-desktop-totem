@@ -16,16 +16,13 @@ namespace PassFlowTotem.Services
             {
                 var doc = new PrintDocument();
 
-                // Define a impressora específica ou a Padrão do Windows
                 if (!string.IsNullOrWhiteSpace(device.PrinterName))
                 {
                     doc.PrinterSettings.PrinterName = device.PrinterName;
                 }
 
-                // Controlador padrão sem caixa de diálogo (impressão 100% silenciosa)
                 doc.PrintController = new StandardPrintController();
 
-                // Determina largura da bobina (80mm = ~280px a 203 DPI; 58mm = ~200px a 203 DPI)
                 int pageWidth = config.PaperWidth == "58mm" ? 200 : 285;
                 doc.DefaultPageSettings.PaperSize = new PaperSize("CustomThermal", pageWidth, 1200);
                 doc.DefaultPageSettings.Margins = new Margins(10, 10, 10, 20);
@@ -65,7 +62,6 @@ namespace PassFlowTotem.Services
             var fontSmall = new Font("Arial", 8, FontStyle.Regular);
             var fontFooter = new Font("Arial", 8, FontStyle.Regular);
 
-            // Escala da Senha (md: 24pt, lg: 32pt, xl: 40pt)
             float ticketFontSize = config.TicketNumberScale switch
             {
                 "xl" => 40f,
@@ -86,7 +82,29 @@ namespace PassFlowTotem.Services
                 y += 8;
             }
 
-            // 1. CABEÇALHO & IDENTIDADE
+            // 1. LOGOTIPO DA EMPRESA (SE ATIVADO NO CONSTRUTOR DE CUPOM)
+            if (config.ShowLogo && !string.IsNullOrWhiteSpace(device.OrganizationLogo))
+            {
+                try
+                {
+                    var rawBase64 = device.OrganizationLogo;
+                    if (rawBase64.Contains(",")) rawBase64 = rawBase64.Substring(rawBase64.IndexOf(",") + 1);
+                    var bytes = Convert.FromBase64String(rawBase64);
+                    using var ms = new MemoryStream(bytes);
+                    using var img = Image.FromStream(ms);
+
+                    int maxLogoW = Math.Min(140, width - 40);
+                    int maxLogoH = (int)(img.Height * ((float)maxLogoW / img.Width));
+                    if (maxLogoH > 80) maxLogoH = 80;
+
+                    float logoX = (width - maxLogoW) / 2f;
+                    g.DrawImage(img, logoX, y, maxLogoW, maxLogoH);
+                    y += maxLogoH + 8;
+                }
+                catch { }
+            }
+
+            // 2. CABEÇALHO & IDENTIDADE
             if (config.ShowOrganizationName)
             {
                 var orgName = !string.IsNullOrWhiteSpace(config.CustomHeaderTitle)
@@ -118,19 +136,19 @@ namespace PassFlowTotem.Services
             y += 4;
             DrawDivider();
 
-            // 2. TÍTULO / LABEL DA SENHA
+            // 3. TÍTULO / LABEL DA SENHA
             if (!string.IsNullOrWhiteSpace(config.TicketLabel))
             {
                 g.DrawString(config.TicketLabel, fontSmall, brushBlack, new RectangleF(0, y, width, 16), centerFormat);
                 y += 15;
             }
 
-            // 3. NÚMERO DA SENHA EM DESTAQUE
+            // 4. NÚMERO DA SENHA EM DESTAQUE
             float numHeight = ticketFontSize + 16;
             g.DrawString(ticket.Number, fontTicket, brushBlack, new RectangleF(0, y, width, numHeight), centerFormat);
             y += numHeight + 4;
 
-            // 4. INFORMAÇÕES DO SERVIÇO & TIPO DE ATENDIMENTO
+            // 5. INFORMAÇÕES DO SERVIÇO & TIPO DE ATENDIMENTO
             if (config.ShowServiceName && !string.IsNullOrWhiteSpace(ticket.ServiceName))
             {
                 g.DrawString(ticket.ServiceName, fontService, brushBlack, new RectangleF(0, y, width, 22), centerFormat);
@@ -153,7 +171,7 @@ namespace PassFlowTotem.Services
             y += 4;
             DrawDivider();
 
-            // 5. DATA, HORA & POSIÇÃO NA FILA
+            // 6. DATA, HORA & POSIÇÃO NA FILA
             if (config.ShowDateTime)
             {
                 var dtStr = ticket.CreatedAt.ToString("dd/MM/yyyy HH:mm:ss");
@@ -167,7 +185,7 @@ namespace PassFlowTotem.Services
                 y += 16;
             }
 
-            // 6. QR CODE DA FILA VIRTUAL
+            // 7. QR CODE DA FILA VIRTUAL
             if (config.ShowQrCode && !string.IsNullOrWhiteSpace(ticket.VirtualQueueUrl))
             {
                 y += 6;
@@ -186,7 +204,6 @@ namespace PassFlowTotem.Services
                     y += 15;
                 }
 
-                // Gera QR Code via QRCoder
                 int qrPixelSize = config.QrCodeSize switch
                 {
                     "lg" => 130,
@@ -204,7 +221,7 @@ namespace PassFlowTotem.Services
                 y += qrPixelSize + 8;
             }
 
-            // 7. MENSAGENS DE RODAPÉ
+            // 8. MENSAGENS DE RODAPÉ
             if (!string.IsNullOrWhiteSpace(config.FooterMessage))
             {
                 y += 4;
@@ -219,7 +236,6 @@ namespace PassFlowTotem.Services
                 y += 18;
             }
 
-            // Espaço final para guilhotina / corte manual
             y += 25;
             g.DrawString(".", fontSmall, Brushes.White, new PointF(0, y));
         }

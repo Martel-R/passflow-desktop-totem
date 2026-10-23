@@ -11,10 +11,23 @@ namespace PassFlowTotem.Models
         public bool IsPaired { get; set; } = false;
         public string OrganizationId { get; set; } = "";
         public string OrganizationName { get; set; } = "PassFlow";
+        public string OrganizationLogo { get; set; } = "";
+        public string PrimaryColor { get; set; } = "#2563EB";
+        public string AccentColor { get; set; } = "#10B981";
+        public string BackgroundColor { get; set; } = "#0F172A";
         public string UnitId { get; set; } = "";
         public string UnitName { get; set; } = "Unidade Principal";
         public List<string> AllowedServices { get; set; } = new();
         public string PrinterName { get; set; } = ""; // Vazio = Impressora Padrão do Windows
+    }
+
+    public class BrandingInfo
+    {
+        public string OrganizationName { get; set; } = "PassFlow Atendimento";
+        public string OrganizationLogo { get; set; } = "";
+        public string PrimaryColor { get; set; } = "#2563EB";
+        public string AccentColor { get; set; } = "#10B981";
+        public string BackgroundColor { get; set; } = "#0F172A";
     }
 
     public class Category
@@ -134,7 +147,7 @@ namespace PassFlowTotem.Models
         public bool ShowDateTime { get; set; } = true;
 
         [JsonPropertyName("showQueuePosition")]
-        public bool ShowQueuePosition { get; set; } = true;
+        public bool ShowQueuePosition { get; set; } = false;
 
         [JsonPropertyName("showQrCode")]
         public bool ShowQrCode { get; set; } = true;
@@ -143,13 +156,13 @@ namespace PassFlowTotem.Models
         public string QrCodeSize { get; set; } = "md"; // sm, md, lg
 
         [JsonPropertyName("qrCodeTitle")]
-        public string QrCodeTitle { get; set; } = "Fila Virtual no Celular";
+        public string QrCodeTitle { get; set; } = "ACOMPANHE A FILA PELO CELULAR";
 
         [JsonPropertyName("qrCodeSubtitle")]
-        public string QrCodeSubtitle { get; set; } = "Acompanhe sua vez em tempo real";
+        public string QrCodeSubtitle { get; set; } = "Aponte a câmera do celular para o QR Code";
 
         [JsonPropertyName("footerMessage")]
-        public string FooterMessage { get; set; } = "Obrigado por aguardar!";
+        public string FooterMessage { get; set; } = "Aguarde e será chamado.";
 
         [JsonPropertyName("extraFooterNote")]
         public string ExtraFooterNote { get; set; } = "";

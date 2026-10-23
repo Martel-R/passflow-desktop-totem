@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing.Printing;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using MahApps.Metro.IconPacks;
 using PassFlowTotem.Models;
@@ -133,7 +135,7 @@ namespace PassFlowTotem
         }
 
         // =========================================================================
-        // FLUXO 2: MODO QUIOSQUE / AUTOATENDIMENTO
+        // FLUXO 2: MODO QUIOSQUE / AUTOATENDIMENTO COM HERANÇA DE BRANDING
         // =========================================================================
 
         private async Task StartKioskModeAsync()
@@ -152,20 +154,90 @@ namespace PassFlowTotem
 
         private async Task LoadServerDataAsync()
         {
-            var (categories, services, ticketTypes, printConfig, orgName, unitName) =
+            var (categories, services, ticketTypes, printConfig, branding, unitName) =
                 await _firestoreService.LoadKioskDataAsync(_device.OrganizationId, _device.UnitId);
 
             _categories = categories;
             _services = services;
             _ticketTypes = ticketTypes;
             _printConfig = printConfig;
-            _device.OrganizationName = orgName;
+            _device.OrganizationName = branding.OrganizationName;
+            _device.OrganizationLogo = branding.OrganizationLogo;
+            _device.PrimaryColor = branding.PrimaryColor;
+            _device.AccentColor = branding.AccentColor;
+            _device.BackgroundColor = branding.BackgroundColor;
             _device.UnitName = unitName;
 
-            TxtOrgName.Text = orgName;
+            ApplyBranding(branding, unitName);
+            _configService.Save(_device);
+        }
+
+        /// <summary>
+        /// Aplica visualmente toda a identidade visual de Branding configurada no PassFlow
+        /// </summary>
+        private void ApplyBranding(BrandingInfo branding, string unitName)
+        {
+            // 1. Textos
+            TxtOrgName.Text = branding.OrganizationName;
             TxtUnitName.Text = unitName;
 
-            _configService.Save(_device);
+            // 2. Logotipo Oficial em Alta Resolução
+            if (!string.IsNullOrWhiteSpace(branding.OrganizationLogo))
+            {
+                var bmp = Base64ToBitmapImage(branding.OrganizationLogo);
+                if (bmp != null)
+                {
+                    ImgOrgLogo.Source = bmp;
+                    BorderOrgLogo.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    BorderOrgLogo.Visibility = Visibility.Collapsed;
+                }
+            }
+            else
+            {
+                BorderOrgLogo.Visibility = Visibility.Collapsed;
+            }
+
+            // 3. Cores Dinâmicas do Tema (Primary, Accent, Background)
+            try
+            {
+                var primaryColor = (Color)ColorConverter.ConvertFromString(branding.PrimaryColor);
+                var accentColor = (Color)ColorConverter.ConvertFromString(branding.AccentColor);
+
+                var primaryBrush = new SolidColorBrush(primaryColor);
+                var accentBrush = new SolidColorBrush(accentColor);
+
+                TxtUnitName.Foreground = accentBrush;
+                HeaderBorder.BorderBrush = primaryBrush;
+            }
+            catch { }
+        }
+
+        private BitmapImage? Base64ToBitmapImage(string? base64Str)
+        {
+            if (string.IsNullOrWhiteSpace(base64Str)) return null;
+
+            try
+            {
+                var raw = base64Str;
+                if (raw.Contains(",")) raw = raw.Substring(raw.IndexOf(",") + 1);
+
+                var bytes = Convert.FromBase64String(raw);
+                using var stream = new MemoryStream(bytes);
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.StreamSource = stream;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                return bitmap;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void ResetKioskToHome()
@@ -177,8 +249,6 @@ namespace PassFlowTotem
             BtnBack.Visibility = Visibility.Collapsed;
             BtnCancel.Visibility = Visibility.Collapsed;
 
-            // Se existirem categorias cadastradas, exibe primeiro as categorias;
-            // caso contrário, exibe diretamente a lista de serviços.
             if (_categories.Count > 0)
             {
                 ShowCategoriesStep();
@@ -319,11 +389,14 @@ namespace PassFlowTotem
 
             PanelTicketTypesWrap.Children.Clear();
 
+            Brush themeAccent = TryGetBrush(_device.AccentColor, Color.FromRgb(245, 158, 11));
+            Brush themePrimary = TryGetBrush(_device.PrimaryColor, Color.FromRgb(59, 130, 246));
+
             foreach (var tt in _ticketTypes)
             {
                 var isPriority = tt.PriorityWeight > 1 || tt.Prefix.Equals("P", StringComparison.OrdinalIgnoreCase) || tt.Prefix.Equals("U", StringComparison.OrdinalIgnoreCase);
-                var borderBrush = isPriority ? new SolidColorBrush(Color.FromRgb(245, 158, 11)) : new SolidColorBrush(Color.FromRgb(59, 130, 246));
-                var iconColor = isPriority ? new SolidColorBrush(Color.FromRgb(245, 158, 11)) : new SolidColorBrush(Color.FromRgb(56, 189, 248));
+                var borderBrush = isPriority ? themeAccent : themePrimary;
+                var iconColor = isPriority ? themeAccent : themePrimary;
 
                 var desc = !string.IsNullOrWhiteSpace(tt.Description)
                     ? tt.Description
@@ -335,6 +408,19 @@ namespace PassFlowTotem
                 }, borderBrush, tt.Prefix, iconColor);
 
                 PanelTicketTypesWrap.Children.Add(btn);
+            }
+        }
+
+        private Brush TryGetBrush(string hex, Color fallback)
+        {
+            try
+            {
+                var c = (Color)ColorConverter.ConvertFromString(hex);
+                return new SolidColorBrush(c);
+            }
+            catch
+            {
+                return new SolidColorBrush(fallback);
             }
         }
 
@@ -362,7 +448,7 @@ namespace PassFlowTotem
             KioskPanel.Visibility = Visibility.Collapsed;
             SuccessPanel.Visibility = Visibility.Visible;
 
-            // 2. Dispara a impressão silenciosa na impressora padrão do Windows
+            // 2. Dispara a impressão silenciosa na impressora padrão do Windows com logotipo do branding
             _ = Task.Run(() =>
             {
                 try
@@ -408,8 +494,7 @@ namespace PassFlowTotem
                 VerticalAlignment = VerticalAlignment.Center
             };
 
-            // Renderiza o ícone Lucide nativo vetorial idêntico ao web
-            var iconBrush = customIconBrush ?? new SolidColorBrush(Color.FromRgb(56, 189, 248)); // Sky-400
+            var iconBrush = customIconBrush ?? TryGetBrush(_device.PrimaryColor, Color.FromRgb(56, 189, 248));
             var iconControl = CreateLucideIcon(iconName, 44, iconBrush);
             stack.Children.Add(iconControl);
 
@@ -443,7 +528,7 @@ namespace PassFlowTotem
                     Text = $"Prefixo: {badgePrefix.ToUpper()}",
                     FontSize = 11,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = new SolidColorBrush(Color.FromRgb(96, 165, 250)),
+                    Foreground = TryGetBrush(_device.PrimaryColor, Color.FromRgb(96, 165, 250)),
                     HorizontalAlignment = HorizontalAlignment.Center,
                     Margin = new Thickness(0, 6, 0, 0)
                 };
@@ -456,16 +541,13 @@ namespace PassFlowTotem
             return btn;
         }
 
-        /// <summary>
-        /// Mapeia e cria o ícone vetorial oficial do Lucide idêntico ao Lucide-React do web.
-        /// </summary>
         private FrameworkElement CreateLucideIcon(string? name, double size = 44, Brush? foreground = null)
         {
             var icon = new PackIconLucide
             {
                 Width = size,
                 Height = size,
-                Foreground = foreground ?? new SolidColorBrush(Color.FromRgb(56, 189, 248)),
+                Foreground = foreground ?? TryGetBrush(_device.PrimaryColor, Color.FromRgb(56, 189, 248)),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 0, 10)
@@ -475,7 +557,6 @@ namespace PassFlowTotem
             {
                 var clean = name.Replace("-", "").Replace("_", "").Trim();
 
-                // Mapeamentos comuns entre Lucide React e o Enum do PackIconLucide
                 if (clean.Equals("SquareActivity", StringComparison.OrdinalIgnoreCase))
                     clean = "Activity";
                 else if (clean.Equals("Stethoscope", StringComparison.OrdinalIgnoreCase))
@@ -490,7 +571,6 @@ namespace PassFlowTotem
                 }
             }
 
-            // Fallback se não encontrar o nome exato
             icon.Kind = PackIconLucideKind.Layers;
             return icon;
         }
@@ -633,6 +713,7 @@ namespace PassFlowTotem
                 var testDevice = new DeviceConfig
                 {
                     OrganizationName = _device.OrganizationName,
+                    OrganizationLogo = _device.OrganizationLogo,
                     UnitName = _device.UnitName,
                     PrinterName = CmbPrinters.SelectedIndex > 0 ? CmbPrinters.SelectedItem.ToString() ?? "" : ""
                 };

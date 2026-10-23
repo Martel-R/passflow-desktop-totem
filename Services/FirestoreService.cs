@@ -82,16 +82,16 @@ namespace PassFlowTotem.Services
         }
 
         // =========================================================================
-        // 2. CARREGAR DADOS DO QUIOSQUE (CATEGORIAS, SERVIÇOS, TIPOS DE SENHA, CUPOM)
+        // 2. CARREGAR DADOS DO QUIOSQUE (CATEGORIAS, SERVIÇOS, TIPOS DE SENHA, BRANDING, CUPOM)
         // =========================================================================
 
-        public async Task<(List<Category> categories, List<Service> services, List<TicketType> ticketTypes, TicketPrintConfig printConfig, string orgName, string unitName)> LoadKioskDataAsync(string orgId, string unitId)
+        public async Task<(List<Category> categories, List<Service> services, List<TicketType> ticketTypes, TicketPrintConfig printConfig, BrandingInfo branding, string unitName)> LoadKioskDataAsync(string orgId, string unitId)
         {
             var categories = new List<Category>();
             var services = new List<Service>();
             var ticketTypes = new List<TicketType>();
             var printConfig = new TicketPrintConfig();
-            var orgName = "PassFlow Atendimento";
+            var branding = new BrandingInfo();
             var unitName = "Unidade Matriz";
 
             try
@@ -126,22 +126,45 @@ namespace PassFlowTotem.Services
                 }
                 ticketTypes = rawTypes.GroupBy(t => t.Id).Select(g => g.First()).OrderByDescending(t => t.PriorityWeight).ToList();
 
-                // Se não houver tipos cadastrados, adiciona os padrões oficiais do PassFlow
                 if (ticketTypes.Count == 0)
                 {
                     ticketTypes.Add(new TicketType { Id = "type-normal", Name = "Atendimento Convencional", Prefix = "A", PriorityWeight = 1, Icon = "User", Description = "Atendimento padrão por ordem de chegada" });
                     ticketTypes.Add(new TicketType { Id = "type-pref", Name = "Atendimento Prioritário", Prefix = "P", PriorityWeight = 5, Icon = "Heart", Description = "Lei 10.048/2000: Idosos (60+), PCD, Gestantes, Lactantes e TEA" });
                 }
 
-                // 4. Carregar Modelo do Cupom (ticketPrintConfig)
-                printConfig = await LoadSettingAsync<TicketPrintConfig>($"{unitPath}/settings/ticketPrintConfig")
-                              ?? await LoadSettingAsync<TicketPrintConfig>($"{sharedPath}/settings/ticketPrintConfig")
-                              ?? new TicketPrintConfig();
+                // 4. Carregar Modelo do Cupom (ticketPrintConfig) respeitando herança (Unit -> Shared -> Padrão)
+                printConfig = await LoadSettingAsync<TicketPrintConfig>($"{unitPath}/settings/ticketPrintConfig");
+                if (printConfig == null || string.IsNullOrWhiteSpace(printConfig.PaperWidth))
+                {
+                    printConfig = await LoadSettingAsync<TicketPrintConfig>($"{sharedPath}/settings/ticketPrintConfig") ?? new TicketPrintConfig();
+                }
 
-                // 5. Carregar Nome da Organização
-                var customOrgName = await LoadStringSettingAsync($"{unitPath}/settings/organizationName")
-                                    ?? await LoadStringSettingAsync($"{sharedPath}/settings/organizationName");
-                if (!string.IsNullOrWhiteSpace(customOrgName)) orgName = customOrgName;
+                // 5. Carregar Branding (Identidade Visual): Nome, Logotipo, Cores Primária, Destaque e Fundo
+                var useCustomBranding = (await LoadStringSettingAsync($"{unitPath}/settings/use_custom_branding")) == "true";
+                var brandingSourcePath = useCustomBranding ? unitPath : sharedPath;
+
+                var orgNameVal = await LoadStringSettingAsync($"{brandingSourcePath}/settings/organizationName");
+                if (string.IsNullOrWhiteSpace(orgNameVal) && !useCustomBranding)
+                {
+                    orgNameVal = await LoadStringSettingAsync($"{unitPath}/settings/organizationName");
+                }
+                if (!string.IsNullOrWhiteSpace(orgNameVal)) branding.OrganizationName = orgNameVal;
+
+                var logoVal = await LoadStringSettingAsync($"{brandingSourcePath}/settings/organizationLogo");
+                if (string.IsNullOrWhiteSpace(logoVal) && !useCustomBranding)
+                {
+                    logoVal = await LoadStringSettingAsync($"{unitPath}/settings/organizationLogo");
+                }
+                if (!string.IsNullOrWhiteSpace(logoVal)) branding.OrganizationLogo = logoVal;
+
+                var primaryVal = await LoadStringSettingAsync($"{brandingSourcePath}/settings/theme.primary");
+                if (!string.IsNullOrWhiteSpace(primaryVal)) branding.PrimaryColor = HslOrCssToHex(primaryVal, "#2563EB");
+
+                var accentVal = await LoadStringSettingAsync($"{brandingSourcePath}/settings/theme.accent");
+                if (!string.IsNullOrWhiteSpace(accentVal)) branding.AccentColor = HslOrCssToHex(accentVal, "#10B981");
+
+                var bgVal = await LoadStringSettingAsync($"{brandingSourcePath}/settings/theme.background");
+                if (!string.IsNullOrWhiteSpace(bgVal)) branding.BackgroundColor = HslOrCssToHex(bgVal, "#0F172A");
 
                 // 6. Carregar Nome da Unidade
                 try
@@ -165,11 +188,11 @@ namespace PassFlowTotem.Services
                 Console.WriteLine($"Erro ao carregar dados do quiosque no Firestore: {ex.Message}");
             }
 
-            return (categories, services, ticketTypes, printConfig, orgName, unitName);
+            return (categories, services, ticketTypes, printConfig ?? new TicketPrintConfig(), branding, unitName);
         }
 
         // =========================================================================
-        // 3. EMITIR E SALVAR SENHA NO FIRESTORE COM PREFIXO DINÂMICO DO TIPO
+        // 3. EMITIR E SALVAR SENHA NO FIRESTORE
         // =========================================================================
 
         public async Task<GeneratedTicket> CreateTicketAsync(
@@ -233,7 +256,6 @@ namespace PassFlowTotem.Services
             var nowUtc = DateTime.UtcNow;
             var nowLocal = DateTime.Now;
 
-            // Grava o novo ticket no Firestore
             try
             {
                 var postUrl = $"{BaseUrl}/organizations/{orgId}/units/{unitId}/tickets";
@@ -343,7 +365,6 @@ namespace PassFlowTotem.Services
                 SubServices = new List<SubService>()
             };
 
-            // Parse subservices se houver
             if (f.TryGetProperty("subServices", out var subProp) && subProp.TryGetProperty("arrayValue", out var arr))
             {
                 if (arr.TryGetProperty("values", out var vals) && vals.ValueKind == JsonValueKind.Array)
@@ -392,7 +413,7 @@ namespace PassFlowTotem.Services
             if (isAllUnits) return true;
 
             var targetUnits = GetArrayField(f, "targetUnitIds");
-            if (targetUnits.Count == 0) return true; // Se não especificado, permite
+            if (targetUnits.Count == 0) return true;
 
             return targetUnits.Contains(unitId);
         }
@@ -484,6 +505,64 @@ namespace PassFlowTotem.Services
                 }
             }
             return result;
+        }
+
+        // =========================================================================
+        // CONVERSÃO DE CORES: HSL (Passflow/Tailwind) -> HEX (#RRGGBB)
+        // =========================================================================
+
+        public static string HslOrCssToHex(string? input, string fallbackHex)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return fallbackHex;
+            var trimmed = input.Trim();
+
+            if (trimmed.StartsWith("#")) return trimmed;
+
+            // Formato PassFlow: "231 45% 26%" ou "hsl(231, 45%, 26%)"
+            var clean = trimmed.Replace("hsl(", "").Replace(")", "").Replace(",", " ");
+            var parts = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 3)
+            {
+                if (double.TryParse(parts[0], out var h) &&
+                    double.TryParse(parts[1].Replace("%", ""), out var s) &&
+                    double.TryParse(parts[2].Replace("%", ""), out var l))
+                {
+                    s /= 100.0;
+                    l /= 100.0;
+
+                    double r, g, b;
+                    if (s == 0)
+                    {
+                        r = g = b = l;
+                    }
+                    else
+                    {
+                        double q = l < 0.5 ? l * (1.0 + s) : l + s - (l * s);
+                        double p = (2.0 * l) - q;
+                        r = HueToRgb(p, q, (h / 360.0) + (1.0 / 3.0));
+                        g = HueToRgb(p, q, h / 360.0);
+                        b = HueToRgb(p, q, (h / 360.0) - (1.0 / 3.0));
+                    }
+
+                    int ri = (int)Math.Clamp(Math.Round(r * 255.0), 0, 255);
+                    int gi = (int)Math.Clamp(Math.Round(g * 255.0), 0, 255);
+                    int bi = (int)Math.Clamp(Math.Round(b * 255.0), 0, 255);
+
+                    return $"#{ri:X2}{gi:X2}{bi:X2}";
+                }
+            }
+
+            return fallbackHex;
+        }
+
+        private static double HueToRgb(double p, double q, double t)
+        {
+            if (t < 0.0) t += 1.0;
+            if (t > 1.0) t -= 1.0;
+            if (t < 1.0 / 6.0) return p + ((q - p) * 6.0 * t);
+            if (t < 1.0 / 2.0) return q;
+            if (t < 2.0 / 3.0) return p + ((q - p) * ((2.0 / 3.0) - t) * 6.0);
+            return p;
         }
     }
 }
