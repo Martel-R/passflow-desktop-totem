@@ -201,7 +201,8 @@ namespace PassFlowTotem.Services
             string unitId,
             Service service,
             TicketType ticketType,
-            SubService? subService)
+            SubService? subService,
+            string? categoryId = null)
         {
             var prefix = !string.IsNullOrWhiteSpace(ticketType.Prefix) ? ticketType.Prefix.ToUpper() : "A";
             int priorityWeight = ticketType.PriorityWeight > 0 ? ticketType.PriorityWeight : 1;
@@ -259,6 +260,8 @@ namespace PassFlowTotem.Services
             try
             {
                 var postUrl = $"{BaseUrl}/organizations/{orgId}/units/{unitId}/tickets";
+                var effectiveCatId = !string.IsNullOrWhiteSpace(service.CategoryId) ? service.CategoryId : categoryId;
+
                 var fields = new Dictionary<string, object>
                 {
                     ["number"] = new { stringValue = ticketNumber },
@@ -272,9 +275,9 @@ namespace PassFlowTotem.Services
                     ["createdTimestamp"] = new { timestampValue = nowUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ") }
                 };
 
-                if (!string.IsNullOrWhiteSpace(service.CategoryId))
+                if (!string.IsNullOrWhiteSpace(effectiveCatId))
                 {
-                    fields["serviceCategoryId"] = new { stringValue = service.CategoryId };
+                    fields["serviceCategoryId"] = new { stringValue = effectiveCatId };
                 }
 
                 if (subService != null)
@@ -285,6 +288,9 @@ namespace PassFlowTotem.Services
 
                 var content = new StringContent(JsonSerializer.Serialize(new { fields }), Encoding.UTF8, "application/json");
                 await _http.PostAsync(postUrl, content);
+
+                // Dispara sinal WebSocket em tempo real para o PassFlow atualizar os navegadores conectados instantaneamente
+                _ = BroadcastRealtimeRefreshAsync(serverUrl, orgId, unitId);
             }
             catch (Exception ex)
             {
@@ -307,6 +313,30 @@ namespace PassFlowTotem.Services
                 QueuePosition = queuePosition,
                 VirtualQueueUrl = virtualQueueUrl
             };
+        }
+
+        public async Task BroadcastRealtimeRefreshAsync(string serverUrl, string orgId, string unitId)
+        {
+            try
+            {
+                var clean = serverUrl.TrimEnd('/');
+                var wsUrl = clean.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                    ? "wss://" + clean.Substring("https://".Length)
+                    : "ws://" + clean.Substring("http://".Length);
+
+                using var ws = new System.Net.WebSockets.ClientWebSocket();
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await ws.ConnectAsync(new Uri(wsUrl), cts.Token);
+
+                var payload = JsonSerializer.Serialize(new { type = "refresh", orgId, unitId });
+                var bytes = Encoding.UTF8.GetBytes(payload);
+                await ws.SendAsync(new ArraySegment<byte>(bytes), System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
+                await ws.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "done", cts.Token);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Aviso: broadcast websocket: {ex.Message}");
+            }
         }
 
         // =========================================================================

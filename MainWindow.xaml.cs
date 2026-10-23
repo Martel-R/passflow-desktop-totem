@@ -437,7 +437,8 @@ namespace PassFlowTotem
                 _device.UnitId,
                 service,
                 ticketType,
-                _selectedSubService
+                _selectedSubService,
+                _selectedCategory?.Id
             );
 
             // 1. Exibe tela de sucesso
