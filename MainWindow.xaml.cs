@@ -23,6 +23,7 @@ namespace PassFlowTotem
         private TicketPrintConfig _printConfig = new();
         private List<Category> _categories = new();
         private List<Service> _services = new();
+        private List<TicketType> _ticketTypes = new();
 
         private Category? _selectedCategory;
         private Service? _selectedService;
@@ -150,11 +151,12 @@ namespace PassFlowTotem
 
         private async Task LoadServerDataAsync()
         {
-            var (categories, services, printConfig, orgName, unitName) =
+            var (categories, services, ticketTypes, printConfig, orgName, unitName) =
                 await _firestoreService.LoadKioskDataAsync(_device.OrganizationId, _device.UnitId);
 
             _categories = categories;
             _services = services;
+            _ticketTypes = ticketTypes;
             _printConfig = printConfig;
             _device.OrganizationName = orgName;
             _device.UnitName = unitName;
@@ -174,7 +176,16 @@ namespace PassFlowTotem
             BtnBack.Visibility = Visibility.Collapsed;
             BtnCancel.Visibility = Visibility.Collapsed;
 
-            ShowCategoriesStep();
+            // Se existirem categorias cadastradas, exibe primeiro as categorias;
+            // caso contrário, exibe diretamente a lista de serviços.
+            if (_categories.Count > 0)
+            {
+                ShowCategoriesStep();
+            }
+            else
+            {
+                ShowServicesStep();
+            }
         }
 
         private void RestartInactivityTimer()
@@ -183,7 +194,7 @@ namespace PassFlowTotem
             _inactivityTimer.Start();
         }
 
-        // PASSO 1: CATEGORIAS
+        // PASSO 1: CATEGORIAS (DINÂMICAS)
         private void ShowCategoriesStep()
         {
             RestartInactivityTimer();
@@ -199,18 +210,13 @@ namespace PassFlowTotem
 
             PanelCategories.Children.Clear();
 
-            var displayCategories = _categories.Count > 0
-                ? _categories
-                : new List<Category>
-                {
-                    new() { Id = "cat-geral", Name = "Atendimento Geral", Icon = "Users" },
-                    new() { Id = "cat-fin", Name = "Financeiro / Caixa", Icon = "DollarSign" },
-                    new() { Id = "cat-rap", Name = "Balcão Rápido", Icon = "Zap" }
-                };
-
-            foreach (var cat in displayCategories)
+            foreach (var cat in _categories)
             {
-                var btn = CreateTouchCard(cat.Name, "Toque para ver os serviços", cat.Icon, () =>
+                // Conta quantos serviços pertencem a esta categoria
+                var srvCount = _services.Count(s => s.CategoryId == cat.Id);
+                var desc = srvCount > 0 ? $"{srvCount} serviço(s) disponível(is)" : "Toque para ver os serviços";
+
+                var btn = CreateTouchCard(cat.Name, desc, cat.Icon, () =>
                 {
                     _selectedCategory = cat;
                     ShowServicesStep();
@@ -219,36 +225,42 @@ namespace PassFlowTotem
             }
         }
 
-        // PASSO 2: SERVIÇOS
+        // PASSO 2: SERVIÇOS (DINÂMICOS)
         private void ShowServicesStep()
         {
             RestartInactivityTimer();
 
-            TxtStepTitle.Text = $"Passo 2: Selecione o Serviço ({_selectedCategory?.Name})";
+            var catLabel = _selectedCategory != null ? $" ({_selectedCategory.Name})" : "";
+            TxtStepTitle.Text = $"Passo 2: Selecione o Serviço{catLabel}";
+
             PanelCategories.Visibility = Visibility.Collapsed;
             PanelServices.Visibility = Visibility.Visible;
             PanelSubServices.Visibility = Visibility.Collapsed;
             PanelTicketTypes.Visibility = Visibility.Collapsed;
 
-            BtnBack.Visibility = Visibility.Visible;
+            BtnBack.Visibility = _categories.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             BtnCancel.Visibility = Visibility.Visible;
 
             PanelServices.Children.Clear();
 
+            // Filtra serviços pela categoria selecionada (se houver) e pelos serviços permitidos no pareamento do totem
             var availableServices = _services
-                .Where(s => _selectedCategory == null || s.CategoryId == _selectedCategory.Id || _categories.Count == 0)
-                .Where(s => _device.AllowedServices.Count == 0 || _device.AllowedServices.Contains(s.Id))
+                .Where(s => _selectedCategory == null || s.CategoryId == _selectedCategory.Id || string.IsNullOrWhiteSpace(s.CategoryId))
+                .Where(s => _device.AllowedServices == null || _device.AllowedServices.Count == 0 || _device.AllowedServices.Contains(s.Id))
                 .ToList();
 
             if (availableServices.Count == 0)
             {
-                availableServices.Add(new Service { Id = "srv-1", Name = "Atendimento Geral", CategoryId = _selectedCategory?.Id ?? "" });
-                availableServices.Add(new Service { Id = "srv-2", Name = "Informações e Dúvidas", CategoryId = _selectedCategory?.Id ?? "" });
+                availableServices.Add(new Service { Id = "srv-1", Name = "Atendimento Geral" });
             }
 
             foreach (var srv in availableServices)
             {
-                var btn = CreateTouchCard(srv.Name, srv.SubServices?.Count > 0 ? "Possui opções adicionais" : "Emitir senha para este serviço", srv.Icon, () =>
+                var desc = srv.SubServices != null && srv.SubServices.Count > 0
+                    ? "Possui opções adicionais"
+                    : "Toque para emitir senha";
+
+                var btn = CreateTouchCard(srv.Name, desc, srv.Icon, () =>
                 {
                     _selectedService = srv;
                     if (srv.SubServices != null && srv.SubServices.Count > 0)
@@ -264,7 +276,7 @@ namespace PassFlowTotem
             }
         }
 
-        // PASSO 3: SUBSERVIÇOS (OPCIONAL)
+        // PASSO 3: SUBSERVIÇOS (DINÂMICOS)
         private void ShowSubServicesStep()
         {
             RestartInactivityTimer();
@@ -292,7 +304,7 @@ namespace PassFlowTotem
             }
         }
 
-        // PASSO 4: TIPO DE ATENDIMENTO (CONVENCIONAL / PRIORITÁRIO)
+        // PASSO 4: TIPOS DE SENHA (DINÂMICOS CONFORME CONFIGURADO NO PASSFLOW)
         private void ShowTicketTypesStep()
         {
             RestartInactivityTimer();
@@ -305,39 +317,46 @@ namespace PassFlowTotem
 
             BtnBack.Visibility = Visibility.Visible;
             BtnCancel.Visibility = Visibility.Visible;
+
+            PanelTicketTypesWrap.Children.Clear();
+
+            foreach (var tt in _ticketTypes)
+            {
+                var isPriority = tt.PriorityWeight > 1 || tt.Prefix.Equals("P", StringComparison.OrdinalIgnoreCase);
+                var borderBrush = isPriority ? new SolidColorBrush(Color.FromRgb(245, 158, 11)) : new SolidColorBrush(Color.FromRgb(59, 130, 246));
+                var desc = !string.IsNullOrWhiteSpace(tt.Description)
+                    ? tt.Description
+                    : (isPriority ? "Atendimento prioritário legal" : "Atendimento convencional por ordem de chegada");
+
+                var btn = CreateTouchCard(tt.Name, desc, tt.Icon, async () =>
+                {
+                    await GenerateAndPrintTicketAsync(tt);
+                }, borderBrush, tt.Prefix);
+
+                PanelTicketTypesWrap.Children.Add(btn);
+            }
         }
 
-        private async void BtnNormalTicket_Click(object sender, RoutedEventArgs e)
-        {
-            await GenerateAndPrintTicketAsync("convencional", "Normal / Convencional");
-        }
-
-        private async void BtnPriorityTicket_Click(object sender, RoutedEventArgs e)
-        {
-            await GenerateAndPrintTicketAsync("preferencial", "Preferencial / Prioritário");
-        }
-
-        private async Task GenerateAndPrintTicketAsync(string typeCode, string typeName)
+        private async Task GenerateAndPrintTicketAsync(TicketType ticketType)
         {
             _inactivityTimer.Stop();
 
             var service = _selectedService ?? new Service { Id = "srv-1", Name = "Atendimento Geral" };
 
-            // Emite e grava o ticket diretamente no Firestore do PassFlow
+            // Emite e grava o ticket diretamente no Firestore do PassFlow com o prefixo e peso do tipo configurado
             var ticket = await _firestoreService.CreateTicketAsync(
                 _device.ServerUrl,
                 _device.OrganizationId,
                 _device.UnitId,
                 service,
-                typeCode,
-                typeName,
+                ticketType,
                 _selectedSubService
             );
 
             // 1. Exibe tela de sucesso
             TxtSuccessTicketNumber.Text = ticket.Number;
             TxtSuccessService.Text = ticket.ServiceName;
-            TxtSuccessType.Text = $"[{typeName.ToUpper()}]";
+            TxtSuccessType.Text = $"[{ticketType.Name.ToUpper()}]";
 
             KioskPanel.Visibility = Visibility.Collapsed;
             SuccessPanel.Visibility = Visibility.Visible;
@@ -362,13 +381,18 @@ namespace PassFlowTotem
             KioskPanel.Visibility = Visibility.Visible;
         }
 
-        private Button CreateTouchCard(string title, string description, string icon, Action onClick)
+        private Button CreateTouchCard(string title, string description, string icon, Action onClick, Brush? customBorder = null, string? badgePrefix = null)
         {
             var btn = new Button
             {
                 Style = (Style)FindResource("TouchCardButton"),
                 Margin = new Thickness(10)
             };
+
+            if (customBorder != null)
+            {
+                btn.BorderBrush = customBorder;
+            }
 
             var stack = new StackPanel
             {
@@ -409,6 +433,20 @@ namespace PassFlowTotem
             stack.Children.Add(txtTitle);
             stack.Children.Add(txtDesc);
 
+            if (!string.IsNullOrWhiteSpace(badgePrefix))
+            {
+                var txtBadge = new TextBlock
+                {
+                    Text = $"Prefixo: {badgePrefix.ToUpper()}",
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = new SolidColorBrush(Color.FromRgb(96, 165, 250)),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(0, 6, 0, 0)
+                };
+                stack.Children.Add(txtBadge);
+            }
+
             btn.Content = stack;
             btn.Click += (s, e) => onClick();
 
@@ -423,11 +461,12 @@ namespace PassFlowTotem
                 "users" or "user" => "👥",
                 "dollarsign" or "dollar" or "finance" => "💰",
                 "zap" or "fast" or "speed" => "⚡",
-                "stethoscope" or "health" or "squareactivity" or "smile" => "🩺",
+                "stethoscope" or "health" or "squareactivity" or "smile" or "heart" or "activity" => "🩺",
                 "filetext" or "document" => "📄",
                 "creditcard" or "card" => "💳",
                 "shoppingbag" or "store" => "🛍️",
                 "wrench" or "tool" => "🔧",
+                "alertcircle" or "alert" => "🚨",
                 _ => "📋"
             };
         }
@@ -447,7 +486,10 @@ namespace PassFlowTotem
             }
             else if (PanelServices.Visibility == Visibility.Visible)
             {
-                ShowCategoriesStep();
+                if (_categories.Count > 0)
+                    ShowCategoriesStep();
+                else
+                    ResetKioskToHome();
             }
         }
 

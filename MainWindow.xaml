@@ -157,45 +157,21 @@
             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="40">
                 <Grid HorizontalAlignment="Center" MaxWidth="1200">
                     
-                    <!-- ETAPA 1: CATEGORIAS -->
+                    <!-- ETAPA 1: CATEGORIAS (DINÂMICAS) -->
                     <WrapPanel x:Name="PanelCategories" Visibility="Visible" HorizontalAlignment="Center" ItemWidth="340" ItemHeight="220" Margin="-10" />
 
-                    <!-- ETAPA 2: SERVIÇOS -->
+                    <!-- ETAPA 2: SERVIÇOS (DINÂMICOS) -->
                     <WrapPanel x:Name="PanelServices" Visibility="Collapsed" HorizontalAlignment="Center" ItemWidth="340" ItemHeight="200" Margin="-10" />
 
-                    <!-- ETAPA 3: SUBSERVIÇOS -->
+                    <!-- ETAPA 3: SUBSERVIÇOS (DINÂMICOS) -->
                     <WrapPanel x:Name="PanelSubServices" Visibility="Collapsed" HorizontalAlignment="Center" ItemWidth="340" ItemHeight="180" Margin="-10" />
 
-                    <!-- ETAPA 4: TIPO DE ATENDIMENTO (CONVENCIONAL VS PREFERENCIAL) -->
-                    <StackPanel x:Name="PanelTicketTypes" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" Width="900" Margin="0,20,0,0">
-                        <TextBlock Text="Qual a sua prioridade de atendimento?" Foreground="#FFFFFF" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,8" />
-                        <TextBlock Text="Selecione abaixo conforme previsto na Lei Federal nº 10.048/2000" Foreground="#94A3B8" FontSize="14" HorizontalAlignment="Center" Margin="0,0,0,40" />
+                    <!-- ETAPA 4: TIPO DE ATENDIMENTO (DINÂMICO CONFORME CONFIGURADO NO PASSFLOW) -->
+                    <StackPanel x:Name="PanelTicketTypes" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" Width="960" Margin="0,10,0,0">
+                        <TextBlock x:Name="TxtTicketTypeHeading" Text="Qual a sua prioridade de atendimento?" Foreground="#FFFFFF" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                        <TextBlock Text="Selecione abaixo conforme previsto na Lei Federal nº 10.048/2000" Foreground="#94A3B8" FontSize="14" HorizontalAlignment="Center" Margin="0,0,0,30" />
 
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="30" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-
-                            <!-- BOTÃO ATENDIMENTO NORMAL -->
-                            <Button Grid.Column="0" Height="260" Style="{StaticResource TouchCardButton}" Click="BtnNormalTicket_Click">
-                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <TextBlock Text="👤" FontSize="54" HorizontalAlignment="Center" Margin="0,0,0,14" />
-                                    <TextBlock Text="CONVENCIONAL" FontSize="26" FontWeight="Black" Foreground="#FFFFFF" HorizontalAlignment="Center" />
-                                    <TextBlock Text="Atendimento padrão por ordem de chegada" FontSize="13" Foreground="#94A3B8" TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,0" />
-                                </StackPanel>
-                            </Button>
-
-                            <!-- BOTÃO ATENDIMENTO PREFERENCIAL -->
-                            <Button Grid.Column="2" Height="260" Style="{StaticResource TouchCardButton}" Click="BtnPriorityTicket_Click" BorderBrush="#F59E0B">
-                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <TextBlock Text="⭐" FontSize="54" HorizontalAlignment="Center" Margin="0,0,0,14" />
-                                    <TextBlock Text="PRIORITÁRIO" FontSize="26" FontWeight="Black" Foreground="#F59E0B" HorizontalAlignment="Center" />
-                                    <TextBlock Text="Idosos (60+), Gestantes, PCD, Pessoas com Crianças de Colo e TEA" FontSize="12" Foreground="#CBD5E1" TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,0" />
-                                </StackPanel>
-                            </Button>
-                        </Grid>
+                        <WrapPanel x:Name="PanelTicketTypesWrap" HorizontalAlignment="Center" ItemWidth="360" ItemHeight="220" Margin="-10" />
                     </StackPanel>
                 </Grid>
             </ScrollViewer>
