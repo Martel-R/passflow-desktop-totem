@@ -9,13 +9,13 @@
     <RootNamespace>PassFlowTotem</RootNamespace>
     <AssemblyName>PassFlowTotem</AssemblyName>
     <ApplicationTitle>PassFlow Totem de Autoatendimento</ApplicationTitle>
-    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationIcon>icon-icons.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="app.ico" />
+    <Resource Include="icon-icons.ico" />
   </ItemGroup>
 
   <ItemGroup>

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Name="RootWindow"
         Title="PassFlow Totem"
-        Icon="app.ico"
+        Icon="icon-icons.ico"
         WindowState="Maximized"
         WindowStyle="None"
         ResizeMode="NoResize"
