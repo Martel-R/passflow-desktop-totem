@@ -159,8 +159,23 @@
                 </Grid>
             </Border>
 
-            <!-- CONTEÚDO DINÂMICO 100% CENTRALIZADO VERTICAL E HORIZONTALMENTE -->
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="32">
+            <!-- CONTEÚDO DINÂMICO 100% CENTRALIZADO VERTICAL E HORIZONTALMENTE COM ROLAGEM TOUCH -->
+            <ScrollViewer x:Name="MainScrollViewer"
+                          Grid.Row="1"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          PanningMode="VerticalOnly"
+                          PanningDeceleration="0.001"
+                          PanningRatio="1"
+                          ManipulationBoundaryFeedback="MainScrollViewer_ManipulationBoundaryFeedback"
+                          PreviewMouseLeftButtonDown="MainScrollViewer_PreviewMouseLeftButtonDown"
+                          PreviewMouseMove="MainScrollViewer_PreviewMouseMove"
+                          PreviewMouseLeftButtonUp="MainScrollViewer_PreviewMouseLeftButtonUp"
+                          PreviewTouchDown="MainScrollViewer_PreviewTouchDown"
+                          PreviewTouchMove="MainScrollViewer_PreviewTouchMove"
+                          PreviewTouchUp="MainScrollViewer_PreviewTouchUp"
+                          ScrollChanged="MainScrollViewer_ScrollChanged"
+                          Padding="32">
                 <Grid HorizontalAlignment="Center" VerticalAlignment="Center"
                       MinHeight="{Binding ActualHeight, RelativeSource={RelativeSource AncestorType=ScrollViewer}}"
                       MaxWidth="1240">
@@ -194,6 +209,24 @@
                             </Style>
                         </Button.Resources>
                     </Button>
+
+                    <!-- Controles Auxiliares de Rolagem Touch (exibidos automaticamente quando houver mais itens) -->
+                    <StackPanel x:Name="TouchScrollControls" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
+                        <Button x:Name="BtnScrollUp" Content="▲ Rolar Acima" Click="BtnScrollUp_Click" Background="#334155" Foreground="#E2E8F0" FontWeight="SemiBold" Padding="18,10" Margin="0,0,12,0" Cursor="Hand">
+                            <Button.Resources>
+                                <Style TargetType="Border">
+                                    <Setter Property="CornerRadius" Value="10"/>
+                                </Style>
+                            </Button.Resources>
+                        </Button>
+                        <Button x:Name="BtnScrollDown" Content="▼ Rolar Abaixo" Click="BtnScrollDown_Click" Background="#334155" Foreground="#E2E8F0" FontWeight="SemiBold" Padding="18,10" Cursor="Hand">
+                            <Button.Resources>
+                                <Style TargetType="Border">
+                                    <Setter Property="CornerRadius" Value="10"/>
+                                </Style>
+                            </Button.Resources>
+                        </Button>
+                    </StackPanel>
 
                     <Button x:Name="BtnCancel" Content="❌ Cancelar e Iniciar Novamente" Click="BtnCancel_Click" Background="#334155" Foreground="#94A3B8" Padding="16,10" HorizontalAlignment="Right" Visibility="Collapsed">
                         <Button.Resources>

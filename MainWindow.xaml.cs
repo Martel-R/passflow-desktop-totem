@@ -35,6 +35,18 @@ namespace PassFlowTotem
         private readonly DispatcherTimer _clockTimer;
         private readonly DispatcherTimer _pairingTimer;
         private readonly DispatcherTimer _inactivityTimer;
+        private readonly DispatcherTimer _inertiaTimer;
+
+        // Estado para rolagem por toque / arraste (Touch & Mouse Drag Panning)
+        private bool _isPointerDown = false;
+        private bool _isDraggingScroll = false;
+        private Point _dragStartPoint;
+        private double _scrollStartOffset = 0;
+        private double _lastDragY = 0;
+        private double _scrollVelocity = 0;
+        private DateTime _lastDragTime = DateTime.MinValue;
+        private DateTime _lastDragCompletedAt = DateTime.MinValue;
+        private const double DragThresholdPixels = 10.0;
 
         private int _logoClickCount = 0;
         private DateTime _lastLogoClick = DateTime.MinValue;
@@ -65,6 +77,10 @@ namespace PassFlowTotem
                 _inactivityTimer.Stop();
                 ResetKioskToHome();
             };
+
+            // Timer de Inércia Suave (60 FPS) para rolagem touch
+            _inertiaTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            _inertiaTimer.Tick += InertiaTimer_Tick;
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -263,6 +279,8 @@ namespace PassFlowTotem
         {
             _inactivityTimer.Stop();
             _inactivityTimer.Start();
+            _inertiaTimer.Stop();
+            MainScrollViewer?.ScrollToTop();
         }
 
         // PASSO 1: CATEGORIAS (DINÂMICAS COM ÍCONES LUCIDE NATIVOS)
@@ -537,9 +555,190 @@ namespace PassFlowTotem
             }
 
             btn.Content = stack;
-            btn.Click += (s, e) => onClick();
+            btn.Click += (s, e) =>
+            {
+                // Ignora o clique se o usuário estava apenas arrastando a tela para rolar
+                if (_isDraggingScroll || (DateTime.UtcNow - _lastDragCompletedAt).TotalMilliseconds < 180)
+                {
+                    e.Handled = true;
+                    return;
+                }
+                onClick();
+            };
 
             return btn;
+        }
+
+        // =========================================================================
+        // ROLAGEM TOUCH E ARRASTE (TOUCHSCREEN & MOUSE DRAG PANNING COM INÉRCIA)
+        // =========================================================================
+
+        private void BeginDragScroll(Point point)
+        {
+            _inertiaTimer.Stop();
+            _isPointerDown = true;
+            _isDraggingScroll = false;
+            _dragStartPoint = point;
+            _lastDragY = point.Y;
+            _scrollStartOffset = MainScrollViewer.VerticalOffset;
+            _scrollVelocity = 0;
+            _lastDragTime = DateTime.UtcNow;
+            _inactivityTimer.Stop();
+            _inactivityTimer.Start();
+        }
+
+        private void UpdateDragScroll(Point currentPoint)
+        {
+            if (!_isPointerDown) return;
+
+            var deltaY = currentPoint.Y - _dragStartPoint.Y;
+            if (!_isDraggingScroll && Math.Abs(deltaY) > DragThresholdPixels)
+            {
+                _isDraggingScroll = true;
+            }
+
+            if (_isDraggingScroll)
+            {
+                var now = DateTime.UtcNow;
+                var dt = (now - _lastDragTime).TotalMilliseconds;
+                if (dt > 0)
+                {
+                    var stepY = _lastDragY - currentPoint.Y;
+                    _scrollVelocity = stepY / Math.Max(dt, 8.0) * 16.0;
+                }
+                _lastDragY = currentPoint.Y;
+                _lastDragTime = now;
+                _lastDragCompletedAt = now;
+
+                var targetOffset = Math.Max(0, Math.Min(MainScrollViewer.ScrollableHeight, _scrollStartOffset - deltaY));
+                MainScrollViewer.ScrollToVerticalOffset(targetOffset);
+            }
+        }
+
+        private bool EndDragScroll()
+        {
+            var wasDragging = _isDraggingScroll;
+            _isPointerDown = false;
+            _isDraggingScroll = false;
+
+            if (wasDragging)
+            {
+                _lastDragCompletedAt = DateTime.UtcNow;
+                if (Math.Abs(_scrollVelocity) > 1.5)
+                {
+                    _inertiaTimer.Start();
+                }
+            }
+            return wasDragging;
+        }
+
+        private void InertiaTimer_Tick(object? sender, EventArgs e)
+        {
+            if (Math.Abs(_scrollVelocity) < 0.5 || MainScrollViewer.ScrollableHeight <= 0)
+            {
+                _scrollVelocity = 0;
+                _inertiaTimer.Stop();
+                return;
+            }
+
+            var nextOffset = MainScrollViewer.VerticalOffset + _scrollVelocity;
+            if (nextOffset <= 0 || nextOffset >= MainScrollViewer.ScrollableHeight)
+            {
+                MainScrollViewer.ScrollToVerticalOffset(Math.Max(0, Math.Min(MainScrollViewer.ScrollableHeight, nextOffset)));
+                _scrollVelocity = 0;
+                _inertiaTimer.Stop();
+                return;
+            }
+
+            MainScrollViewer.ScrollToVerticalOffset(nextOffset);
+            _scrollVelocity *= 0.90;
+        }
+
+        private bool IsOnScrollbarThumb(MouseEventArgs e)
+        {
+            if (e.OriginalSource is DependencyObject dep)
+            {
+                DependencyObject? current = dep;
+                while (current != null)
+                {
+                    if (current is System.Windows.Controls.Primitives.ScrollBar ||
+                        current is System.Windows.Controls.Primitives.Thumb)
+                    {
+                        return true;
+                    }
+                    current = VisualTreeHelper.GetParent(current);
+                }
+            }
+            return false;
+        }
+
+        private void MainScrollViewer_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (IsOnScrollbarThumb(e)) return;
+            BeginDragScroll(e.GetPosition(MainScrollViewer));
+        }
+
+        private void MainScrollViewer_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_isPointerDown || e.LeftButton != MouseButtonState.Pressed) return;
+            UpdateDragScroll(e.GetPosition(MainScrollViewer));
+        }
+
+        private void MainScrollViewer_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (EndDragScroll())
+            {
+                e.Handled = true;
+            }
+        }
+
+        private void MainScrollViewer_PreviewTouchDown(object sender, TouchEventArgs e)
+        {
+            BeginDragScroll(e.GetTouchPoint(MainScrollViewer).Position);
+        }
+
+        private void MainScrollViewer_PreviewTouchMove(object sender, TouchEventArgs e)
+        {
+            if (!_isPointerDown) return;
+            UpdateDragScroll(e.GetTouchPoint(MainScrollViewer).Position);
+        }
+
+        private void MainScrollViewer_PreviewTouchUp(object sender, TouchEventArgs e)
+        {
+            if (EndDragScroll())
+            {
+                e.Handled = true;
+            }
+        }
+
+        private void MainScrollViewer_ManipulationBoundaryFeedback(object sender, ManipulationBoundaryFeedbackEventArgs e)
+        {
+            // Impede que a janela inteira " balance" ao atingir o topo/fim da rolagem no Windows Touch
+            e.Handled = true;
+        }
+
+        private void MainScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            if (TouchScrollControls == null) return;
+            TouchScrollControls.Visibility = MainScrollViewer.ScrollableHeight > 8
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+
+        private void BtnScrollUp_Click(object sender, RoutedEventArgs e)
+        {
+            _inactivityTimer.Stop();
+            _inactivityTimer.Start();
+            var target = Math.Max(0, MainScrollViewer.VerticalOffset - 260);
+            MainScrollViewer.ScrollToVerticalOffset(target);
+        }
+
+        private void BtnScrollDown_Click(object sender, RoutedEventArgs e)
+        {
+            _inactivityTimer.Stop();
+            _inactivityTimer.Start();
+            var target = Math.Min(MainScrollViewer.ScrollableHeight, MainScrollViewer.VerticalOffset + 260);
+            MainScrollViewer.ScrollToVerticalOffset(target);
         }
 
         private FrameworkElement CreateLucideIcon(string? name, double size = 44, Brush? foreground = null)
