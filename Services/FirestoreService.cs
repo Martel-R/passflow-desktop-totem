@@ -204,24 +204,103 @@ namespace PassFlowTotem.Services
             SubService? subService,
             string? categoryId = null)
         {
-            var prefix = !string.IsNullOrWhiteSpace(ticketType.Prefix) ? ticketType.Prefix.ToUpper() : "A";
+            var cleanServer = (serverUrl ?? "").Trim().TrimEnd('/');
+            var prefix = !string.IsNullOrWhiteSpace(ticketType.Prefix) ? ticketType.Prefix.ToUpper() : "N";
             int priorityWeight = ticketType.PriorityWeight > 0 ? ticketType.PriorityWeight : 1;
+            var effectiveCatId = !string.IsNullOrWhiteSpace(service.CategoryId) ? service.CategoryId : (categoryId ?? "");
+            var nowLocal = DateTime.Now;
 
+            // 1. Prioriza emissão centralizada via API /api/totem do servidor PassFlow (garante sequência global única com lock atômico)
+            if (!string.IsNullOrWhiteSpace(cleanServer))
+            {
+                try
+                {
+                    var apiPayload = new
+                    {
+                        orgId,
+                        unitId,
+                        service = new
+                        {
+                            id = service.Id,
+                            name = service.Name,
+                            categoryId = effectiveCatId
+                        },
+                        ticketType = new
+                        {
+                            id = ticketType.Id,
+                            name = ticketType.Name,
+                            prefix,
+                            priorityWeight
+                        },
+                        subService = subService != null
+                            ? new { id = subService.Id, name = subService.Name }
+                            : null
+                    };
+
+                    var apiContent = new StringContent(
+                        JsonSerializer.Serialize(apiPayload),
+                        Encoding.UTF8,
+                        "application/json"
+                    );
+                    var apiResp = await _http.PostAsync($"{cleanServer}/api/totem", apiContent);
+                    if (apiResp.IsSuccessStatusCode)
+                    {
+                        var apiJson = await apiResp.Content.ReadAsStringAsync();
+                        using var apiDoc = JsonDocument.Parse(apiJson);
+                        if (apiDoc.RootElement.TryGetProperty("success", out var succ) && succ.GetBoolean() &&
+                            apiDoc.RootElement.TryGetProperty("ticket", out var tElem))
+                        {
+                            var apiTicketId = tElem.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? Guid.NewGuid().ToString() : Guid.NewGuid().ToString();
+                            var apiNumber = tElem.TryGetProperty("number", out var numProp) ? numProp.GetString() ?? $"{prefix}-001" : $"{prefix}-001";
+                            var vUrl = $"{cleanServer}/my-ticket?ticket={Uri.EscapeDataString(apiNumber)}&orgId={Uri.EscapeDataString(orgId)}&unitId={Uri.EscapeDataString(unitId)}";
+
+                            _ = BroadcastRealtimeRefreshAsync(serverUrl, orgId, unitId);
+
+                            return new GeneratedTicket
+                            {
+                                Id = apiTicketId,
+                                Number = apiNumber,
+                                ServiceId = service.Id,
+                                ServiceName = service.Name,
+                                SubServiceName = subService?.Name,
+                                TicketTypeId = ticketType.Id,
+                                TicketTypeName = ticketType.Name,
+                                CreatedAt = nowLocal,
+                                QueuePosition = 1,
+                                VirtualQueueUrl = vUrl
+                            };
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CreateTicketAsync] Fallback para Firestore REST ({ex.Message})");
+                }
+            }
+
+            // 2. Fallback direto no Firestore REST (com paginação completa e sequência única global para todos os serviços)
             int nextSeq = 1;
             int queuePosition = 1;
+            var todayStartLocal = DateTime.Today;
 
             try
             {
-                var ticketsUrl = $"{BaseUrl}/organizations/{orgId}/units/{unitId}/tickets";
-                var tResp = await _http.GetAsync(ticketsUrl);
-                if (tResp.IsSuccessStatusCode)
+                string? pageToken = null;
+                int maxNum = 0;
+                int waitingCount = 0;
+
+                do
                 {
+                    var ticketsUrl = $"{BaseUrl}/organizations/{orgId}/units/{unitId}/tickets?pageSize=500" +
+                                     (!string.IsNullOrEmpty(pageToken) ? $"&pageToken={Uri.EscapeDataString(pageToken)}" : "");
+                    var tResp = await _http.GetAsync(ticketsUrl);
+                    if (!tResp.IsSuccessStatusCode) break;
+
                     var tJson = await tResp.Content.ReadAsStringAsync();
                     using var doc = JsonDocument.Parse(tJson);
+
                     if (doc.RootElement.TryGetProperty("documents", out var docs) && docs.ValueKind == JsonValueKind.Array)
                     {
-                        int maxNum = 0;
-                        int waitingCount = 0;
                         foreach (var d in docs.EnumerateArray())
                         {
                             if (d.TryGetProperty("fields", out var f))
@@ -235,32 +314,48 @@ namespace PassFlowTotem.Services
                                     waitingCount++;
                                 }
 
-                                if (numStr.StartsWith($"{prefix}-", StringComparison.OrdinalIgnoreCase))
+                                if (status == "cancelled") continue;
+
+                                // Verifica se a senha pertence ao dia de hoje
+                                bool isToday = true;
+                                if (f.TryGetProperty("createdTimestamp", out var tsField))
+                                {
+                                    var tsRaw = tsField.TryGetProperty("timestampValue", out var tv) ? tv.GetString()
+                                              : tsField.TryGetProperty("stringValue", out var sv) ? sv.GetString()
+                                              : null;
+                                    if (!string.IsNullOrWhiteSpace(tsRaw) && DateTime.TryParse(tsRaw, out var parsedDate))
+                                    {
+                                        isToday = parsedDate.ToLocalTime() >= todayStartLocal;
+                                    }
+                                }
+
+                                if (isToday && !string.IsNullOrWhiteSpace(numStr))
                                 {
                                     var parts = numStr.Split('-');
-                                    if (parts.Length > 1 && int.TryParse(parts[1], out var parsedNum))
+                                    var numericPart = parts[parts.Length - 1].Trim();
+                                    if (int.TryParse(numericPart, out var parsedNum) && parsedNum > maxNum)
                                     {
-                                        if (parsedNum > maxNum) maxNum = parsedNum;
+                                        maxNum = parsedNum;
                                     }
                                 }
                             }
                         }
-
-                        nextSeq = maxNum + 1;
-                        queuePosition = Math.Max(1, waitingCount + 1);
                     }
-                }
+
+                    pageToken = doc.RootElement.TryGetProperty("nextPageToken", out var npt) ? npt.GetString() : null;
+                } while (!string.IsNullOrEmpty(pageToken));
+
+                nextSeq = maxNum + 1;
+                queuePosition = Math.Max(1, waitingCount + 1);
             }
             catch { }
 
             var ticketNumber = $"{prefix}-{nextSeq:D3}";
             var nowUtc = DateTime.UtcNow;
-            var nowLocal = DateTime.Now;
 
             try
             {
                 var postUrl = $"{BaseUrl}/organizations/{orgId}/units/{unitId}/tickets";
-                var effectiveCatId = !string.IsNullOrWhiteSpace(service.CategoryId) ? service.CategoryId : categoryId;
 
                 var fields = new Dictionary<string, object>
                 {
@@ -290,14 +385,13 @@ namespace PassFlowTotem.Services
                 await _http.PostAsync(postUrl, content);
 
                 // Dispara sinal WebSocket em tempo real para o PassFlow atualizar os navegadores conectados instantaneamente
-                _ = BroadcastRealtimeRefreshAsync(serverUrl, orgId, unitId);
+                _ = BroadcastRealtimeRefreshAsync(cleanServer, orgId, unitId);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Erro ao gravar ticket no Firestore: {ex.Message}");
             }
 
-            var cleanServer = serverUrl.TrimEnd('/');
             var virtualQueueUrl = $"{cleanServer}/my-ticket?ticket={Uri.EscapeDataString(ticketNumber)}&orgId={Uri.EscapeDataString(orgId)}&unitId={Uri.EscapeDataString(unitId)}";
 
             return new GeneratedTicket
