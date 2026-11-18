@@ -36,6 +36,9 @@ namespace PassFlowTotem
         private readonly DispatcherTimer _pairingTimer;
         private readonly DispatcherTimer _inactivityTimer;
         private readonly DispatcherTimer _inertiaTimer;
+        private readonly DispatcherTimer _syncTimer;
+
+        private bool _isIssuingTicket = false;
 
         // Estado para rolagem por toque / arraste (Touch & Mouse Drag Panning)
         private bool _isPointerDown = false;
@@ -81,6 +84,10 @@ namespace PassFlowTotem
             // Timer de Inércia Suave (60 FPS) para rolagem touch
             _inertiaTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
             _inertiaTimer.Tick += InertiaTimer_Tick;
+
+            // Timer de Sincronização em Segundo Plano (atualiza serviços, categorias e cupom a cada 45s quando ocioso)
+            _syncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(45) };
+            _syncTimer.Tick += async (s, e) => await BackgroundSyncIfIdleAsync();
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -101,6 +108,7 @@ namespace PassFlowTotem
 
         private async Task StartPairingModeAsync()
         {
+            _syncTimer.Stop();
             PairingPanel.Visibility = Visibility.Visible;
             KioskPanel.Visibility = Visibility.Collapsed;
             SuccessPanel.Visibility = Visibility.Collapsed;
@@ -166,6 +174,38 @@ namespace PassFlowTotem
 
             await LoadServerDataAsync();
             ResetKioskToHome();
+            _syncTimer.Start();
+        }
+
+        private async Task BackgroundSyncIfIdleAsync()
+        {
+            if (_isIssuingTicket || KioskPanel.Visibility != Visibility.Visible || AdminModal.Visibility == Visibility.Visible)
+                return;
+
+            // Só recarrega a tela inicial se o totem estiver parado no primeiro passo (sem seleção em andamento)
+            bool isOnFirstStep = _selectedCategory == null && _selectedService == null && _selectedSubService == null;
+            if (!isOnFirstStep) return;
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_device.Pin))
+                {
+                    var paired = await _firestoreService.CheckOrRegisterPinAsync(_device.Pin, _device);
+                    if (paired != null && paired.IsPaired)
+                    {
+                        _device.AllowedServices = paired.AllowedServices;
+                        _device.OrganizationId = paired.OrganizationId;
+                        _device.UnitId = paired.UnitId;
+                    }
+                }
+
+                await LoadServerDataAsync();
+                if (_selectedCategory == null && _selectedService == null && _selectedSubService == null && !_isIssuingTicket)
+                {
+                    ResetKioskToHome();
+                }
+            }
+            catch { }
         }
 
         private async Task LoadServerDataAsync()
@@ -287,6 +327,9 @@ namespace PassFlowTotem
         private void ShowCategoriesStep()
         {
             RestartInactivityTimer();
+            _selectedCategory = null;
+            _selectedService = null;
+            _selectedSubService = null;
 
             TxtStepTitle.Text = "Passo 1: Selecione a Categoria de Atendimento";
             PanelCategories.Visibility = Visibility.Visible;
@@ -299,9 +342,22 @@ namespace PassFlowTotem
 
             PanelCategories.Children.Clear();
 
-            foreach (var cat in _categories)
+            var allowedServicesList = _services
+                .Where(s => _device.AllowedServices == null || _device.AllowedServices.Count == 0 || _device.AllowedServices.Contains(s.Id))
+                .ToList();
+
+            var visibleCategories = _categories
+                .Where(cat => allowedServicesList.Any(s => s.CategoryId == cat.Id))
+                .ToList();
+
+            if (visibleCategories.Count == 0)
             {
-                var srvCount = _services.Count(s => s.CategoryId == cat.Id);
+                visibleCategories = _categories;
+            }
+
+            foreach (var cat in visibleCategories)
+            {
+                var srvCount = allowedServicesList.Count(s => s.CategoryId == cat.Id);
                 var desc = srvCount > 0 ? $"{srvCount} serviço(s) disponível(is)" : "Toque para ver os serviços";
 
                 var btn = CreateTouchCard(cat.Name, desc, cat.Icon, () =>
@@ -317,6 +373,8 @@ namespace PassFlowTotem
         private void ShowServicesStep()
         {
             RestartInactivityTimer();
+            _selectedService = null;
+            _selectedSubService = null;
 
             var catLabel = _selectedCategory != null ? $" ({_selectedCategory.Name})" : "";
             TxtStepTitle.Text = $"Passo 2: Selecione o Serviço{catLabel}";
@@ -350,6 +408,7 @@ namespace PassFlowTotem
                 var btn = CreateTouchCard(srv.Name, desc, srv.Icon, () =>
                 {
                     _selectedService = srv;
+                    _selectedSubService = null;
                     if (srv.SubServices != null && srv.SubServices.Count > 0)
                     {
                         ShowSubServicesStep();
@@ -367,6 +426,7 @@ namespace PassFlowTotem
         private void ShowSubServicesStep()
         {
             RestartInactivityTimer();
+            _selectedSubService = null;
 
             TxtStepTitle.Text = $"Passo 3: Especifique o Atendimento ({_selectedService?.Name})";
             PanelCategories.Visibility = Visibility.Collapsed;
@@ -444,47 +504,60 @@ namespace PassFlowTotem
 
         private async Task GenerateAndPrintTicketAsync(TicketType ticketType)
         {
+            if (_isIssuingTicket) return;
+            _isIssuingTicket = true;
             _inactivityTimer.Stop();
+            PanelTicketTypesWrap.IsEnabled = false;
 
-            var service = _selectedService ?? new Service { Id = "srv-1", Name = "Atendimento Geral" };
-
-            // Emite e grava o ticket diretamente no Firestore do PassFlow com o prefixo e peso do tipo configurado
-            var ticket = await _firestoreService.CreateTicketAsync(
-                _device.ServerUrl,
-                _device.OrganizationId,
-                _device.UnitId,
-                service,
-                ticketType,
-                _selectedSubService,
-                _selectedCategory?.Id
-            );
-
-            // 1. Exibe tela de sucesso
-            TxtSuccessTicketNumber.Text = ticket.Number;
-            TxtSuccessService.Text = ticket.ServiceName;
-            TxtSuccessType.Text = $"[{ticketType.Name.ToUpper()}]";
-
-            KioskPanel.Visibility = Visibility.Collapsed;
-            SuccessPanel.Visibility = Visibility.Visible;
-
-            // 2. Dispara a impressão silenciosa na impressora padrão do Windows com logotipo do branding
-            _ = Task.Run(() =>
+            try
             {
-                try
-                {
-                    _printerService.PrintTicket(ticket, _printConfig, _device);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Erro na impressão: {ex.Message}");
-                }
-            });
+                var service = _selectedService ?? new Service { Id = "srv-1", Name = "Atendimento Geral" };
 
-            // 3. Retorna automaticamente para o início após 5 segundos
-            await Task.Delay(5000);
-            SuccessPanel.Visibility = Visibility.Collapsed;
-            ResetKioskToHome();
-            KioskPanel.Visibility = Visibility.Visible;
+                // Emite e grava o ticket no PassFlow com sequência única global
+                var ticket = await _firestoreService.CreateTicketAsync(
+                    _device.ServerUrl,
+                    _device.OrganizationId,
+                    _device.UnitId,
+                    service,
+                    ticketType,
+                    _selectedSubService,
+                    _selectedCategory?.Id
+                );
+
+                // 1. Exibe tela de sucesso (incluindo subserviço quando selecionado)
+                TxtSuccessTicketNumber.Text = ticket.Number;
+                TxtSuccessService.Text = !string.IsNullOrWhiteSpace(ticket.SubServiceName)
+                    ? $"{ticket.ServiceName} — {ticket.SubServiceName}"
+                    : ticket.ServiceName;
+                TxtSuccessType.Text = $"[{ticketType.Name.ToUpper()}]";
+
+                KioskPanel.Visibility = Visibility.Collapsed;
+                SuccessPanel.Visibility = Visibility.Visible;
+
+                // 2. Dispara a impressão silenciosa na impressora térmica configurada
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        _printerService.PrintTicket(ticket, _printConfig, _device);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Erro na impressão: {ex.Message}");
+                    }
+                });
+
+                // 3. Retorna automaticamente para o início após 5 segundos
+                await Task.Delay(5000);
+                SuccessPanel.Visibility = Visibility.Collapsed;
+                ResetKioskToHome();
+                KioskPanel.Visibility = Visibility.Visible;
+            }
+            finally
+            {
+                PanelTicketTypesWrap.IsEnabled = true;
+                _isIssuingTicket = false;
+            }
         }
 
         private Button CreateTouchCard(
@@ -868,7 +941,7 @@ namespace PassFlowTotem
             AdminModal.Visibility = Visibility.Visible;
         }
 
-        private void BtnSaveAdmin_Click(object sender, RoutedEventArgs e)
+        private async void BtnSaveAdmin_Click(object sender, RoutedEventArgs e)
         {
             if (!string.IsNullOrWhiteSpace(TxtServerInput.Text))
             {
@@ -886,6 +959,12 @@ namespace PassFlowTotem
 
             _configService.Save(_device);
             AdminModal.Visibility = Visibility.Collapsed;
+
+            if (_device.IsPaired && !string.IsNullOrWhiteSpace(_device.OrganizationId) && !string.IsNullOrWhiteSpace(_device.UnitId))
+            {
+                await LoadServerDataAsync();
+                ResetKioskToHome();
+            }
 
             MessageBox.Show("Configurações salvas com sucesso!", "PassFlow Totem", MessageBoxButton.OK, MessageBoxImage.Information);
         }

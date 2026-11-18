@@ -51,16 +51,18 @@ namespace PassFlowTotem.Services
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
             float y = 10;
-            var centerFormat = new StringFormat { Alignment = StringAlignment.Center };
-            var leftFormat = new StringFormat { Alignment = StringAlignment.Near };
+            using var centerFormat = new StringFormat { Alignment = StringAlignment.Center };
+            using var leftFormat = new StringFormat { Alignment = StringAlignment.Near };
 
-            var fontOrg = new Font("Arial", 11, FontStyle.Bold);
-            var fontHeader = new Font("Arial", 9, FontStyle.Regular);
-            var fontUnit = new Font("Arial", 8, FontStyle.Italic);
-            var fontService = new Font("Arial", 12, FontStyle.Bold);
-            var fontSubService = new Font("Arial", 10, FontStyle.Regular);
-            var fontSmall = new Font("Arial", 8, FontStyle.Regular);
-            var fontFooter = new Font("Arial", 8, FontStyle.Regular);
+            using var fontOrg = new Font("Arial", 11, FontStyle.Bold);
+            using var fontHeader = new Font("Arial", 9, FontStyle.Regular);
+            using var fontUnit = new Font("Arial", 8, FontStyle.Italic);
+            using var fontService = new Font("Arial", 12, FontStyle.Bold);
+            using var fontSubService = new Font("Arial", 10, FontStyle.Regular);
+            using var fontSmall = new Font("Arial", 8, FontStyle.Regular);
+            using var fontFooter = new Font("Arial", 8, FontStyle.Regular);
+            using var fontType = new Font("Arial", 9, FontStyle.Bold);
+            using var fontQrTitle = new Font("Arial", 8, FontStyle.Bold);
 
             float ticketFontSize = config.TicketNumberScale switch
             {
@@ -68,11 +70,20 @@ namespace PassFlowTotem.Services
                 "md" => 24f,
                 _ => 32f
             };
-            var fontTicket = new Font("Arial", ticketFontSize, FontStyle.Bold);
+            using var fontTicket = new Font("Arial", ticketFontSize, FontStyle.Bold);
 
             var brushBlack = Brushes.Black;
-            var penSolid = new Pen(Color.Black, 1.2f);
-            var penDashed = new Pen(Color.Black, 1f) { DashStyle = DashStyle.Dash };
+            using var penSolid = new Pen(Color.Black, 1.2f);
+            using var penDashed = new Pen(Color.Black, 1f) { DashStyle = DashStyle.Dash };
+
+            void DrawWrappedCenteredText(string text, Font font, float minHeight, float bottomSpacing = 4f)
+            {
+                var maxTextWidth = Math.Max(40, width - 12);
+                var measured = g.MeasureString(text, font, maxTextWidth, centerFormat);
+                var h = Math.Max(minHeight, measured.Height + 2f);
+                g.DrawString(text, font, brushBlack, new RectangleF(6, y, maxTextWidth, h), centerFormat);
+                y += h + bottomSpacing;
+            }
 
             void DrawDivider()
             {
@@ -151,21 +162,17 @@ namespace PassFlowTotem.Services
             // 5. INFORMAÇÕES DO SERVIÇO & TIPO DE ATENDIMENTO
             if (config.ShowServiceName && !string.IsNullOrWhiteSpace(ticket.ServiceName))
             {
-                g.DrawString(ticket.ServiceName, fontService, brushBlack, new RectangleF(0, y, width, 22), centerFormat);
-                y += 20;
+                DrawWrappedCenteredText(ticket.ServiceName, fontService, 22f, 2f);
             }
 
             if (config.ShowSubServiceName && !string.IsNullOrWhiteSpace(ticket.SubServiceName))
             {
-                g.DrawString(ticket.SubServiceName, fontSubService, brushBlack, new RectangleF(0, y, width, 18), centerFormat);
-                y += 18;
+                DrawWrappedCenteredText(ticket.SubServiceName, fontSubService, 18f, 2f);
             }
 
             if (config.ShowTicketTypeName && !string.IsNullOrWhiteSpace(ticket.TicketTypeName))
             {
-                var fontType = new Font("Arial", 9, FontStyle.Bold);
-                g.DrawString($"[{ticket.TicketTypeName.ToUpper()}]", fontType, brushBlack, new RectangleF(0, y, width, 18), centerFormat);
-                y += 18;
+                DrawWrappedCenteredText($"[{ticket.TicketTypeName.ToUpper()}]", fontType, 18f, 2f);
             }
 
             y += 4;
@@ -193,15 +200,12 @@ namespace PassFlowTotem.Services
 
                 if (!string.IsNullOrWhiteSpace(config.QrCodeTitle))
                 {
-                    var fontQrTitle = new Font("Arial", 8, FontStyle.Bold);
-                    g.DrawString(config.QrCodeTitle, fontQrTitle, brushBlack, new RectangleF(0, y, width, 16), centerFormat);
-                    y += 15;
+                    DrawWrappedCenteredText(config.QrCodeTitle, fontQrTitle, 16f, 2f);
                 }
 
                 if (!string.IsNullOrWhiteSpace(config.QrCodeSubtitle))
                 {
-                    g.DrawString(config.QrCodeSubtitle, fontSmall, brushBlack, new RectangleF(0, y, width, 16), centerFormat);
-                    y += 15;
+                    DrawWrappedCenteredText(config.QrCodeSubtitle, fontSmall, 16f, 4f);
                 }
 
                 int qrPixelSize = config.QrCodeSize switch

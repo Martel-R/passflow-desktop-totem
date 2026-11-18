@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -556,7 +557,10 @@ namespace PassFlowTotem.Services
                         var rawVal = GetStringField(f, "value");
                         if (!string.IsNullOrWhiteSpace(rawVal))
                         {
-                            return JsonSerializer.Deserialize<T>(rawVal);
+                            return JsonSerializer.Deserialize<T>(
+                                rawVal,
+                                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                            );
                         }
                     }
                 }
@@ -647,9 +651,9 @@ namespace PassFlowTotem.Services
             var parts = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length >= 3)
             {
-                if (double.TryParse(parts[0], out var h) &&
-                    double.TryParse(parts[1].Replace("%", ""), out var s) &&
-                    double.TryParse(parts[2].Replace("%", ""), out var l))
+                if (double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var h) &&
+                    double.TryParse(parts[1].Replace("%", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out var s) &&
+                    double.TryParse(parts[2].Replace("%", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out var l))
                 {
                     s /= 100.0;
                     l /= 100.0;
