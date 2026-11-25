@@ -28,13 +28,16 @@ namespace PassFlowTotem.Services
             if (!string.IsNullOrWhiteSpace(configuredUrl))
             {
                 var clean = configuredUrl.Trim().TrimEnd('/');
-                if (!string.IsNullOrWhiteSpace(clean))
+                if (!string.IsNullOrWhiteSpace(clean) &&
+                    !string.Equals(clean, "https://passflow.raevan.com.br", StringComparison.OrdinalIgnoreCase))
+                {
                     urls.Add(clean);
+                }
             }
-            if (!urls.Contains("https://passflow.raevan.com.br", StringComparer.OrdinalIgnoreCase))
-                urls.Add("https://passflow.raevan.com.br");
             if (!urls.Contains("https://rls-passflow.raevan.com.br", StringComparer.OrdinalIgnoreCase))
                 urls.Add("https://rls-passflow.raevan.com.br");
+            if (!urls.Contains("https://passflow.raevan.com.br", StringComparer.OrdinalIgnoreCase))
+                urls.Add("https://passflow.raevan.com.br");
             return urls;
         }
 
@@ -389,7 +392,7 @@ namespace PassFlowTotem.Services
             var nowLocal = DateTime.Now;
 
             // 1. Prioriza emissão centralizada via API /api/totem do servidor PassFlow (garante sequência global única com lock atômico)
-            if (!string.IsNullOrWhiteSpace(cleanServer))
+            foreach (var serverBase in GetCandidateServerUrls(serverUrl))
             {
                 try
                 {
@@ -420,7 +423,7 @@ namespace PassFlowTotem.Services
                         Encoding.UTF8,
                         "application/json"
                     );
-                    var apiResp = await _http.PostAsync($"{cleanServer}/api/totem", apiContent);
+                    var apiResp = await _http.PostAsync($"{serverBase}/api/totem", apiContent);
                     if (apiResp.IsSuccessStatusCode)
                     {
                         var apiJson = await apiResp.Content.ReadAsStringAsync();
@@ -430,9 +433,9 @@ namespace PassFlowTotem.Services
                         {
                             var apiTicketId = tElem.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? Guid.NewGuid().ToString() : Guid.NewGuid().ToString();
                             var apiNumber = tElem.TryGetProperty("number", out var numProp) ? numProp.GetString() ?? $"{prefix}-001" : $"{prefix}-001";
-                            var vUrl = $"{cleanServer}/my-ticket?ticket={Uri.EscapeDataString(apiNumber)}&orgId={Uri.EscapeDataString(orgId)}&unitId={Uri.EscapeDataString(unitId)}";
+                            var vUrl = $"{serverBase}/my-ticket?ticket={Uri.EscapeDataString(apiNumber)}&orgId={Uri.EscapeDataString(orgId)}&unitId={Uri.EscapeDataString(unitId)}";
 
-                            _ = BroadcastRealtimeRefreshAsync(serverUrl, orgId, unitId);
+                            _ = BroadcastRealtimeRefreshAsync(serverBase, orgId, unitId);
 
                             return new GeneratedTicket
                             {
@@ -452,7 +455,7 @@ namespace PassFlowTotem.Services
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[CreateTicketAsync] Fallback para Firestore REST ({ex.Message})");
+                    Console.WriteLine($"[CreateTicketAsync] Fallback ({serverBase}): {ex.Message}");
                 }
             }
 

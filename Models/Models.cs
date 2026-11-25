@@ -6,7 +6,7 @@ namespace PassFlowTotem.Models
 {
     public class DeviceConfig
     {
-        public string ServerUrl { get; set; } = "https://passflow.raevan.com.br";
+        public string ServerUrl { get; set; } = "https://rls-passflow.raevan.com.br";
         public string Pin { get; set; } = "";
         public bool IsPaired { get; set; } = false;
         public string OrganizationId { get; set; } = "";
