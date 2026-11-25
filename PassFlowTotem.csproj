@@ -10,8 +10,23 @@
     <AssemblyName>PassFlowTotem</AssemblyName>
     <ApplicationTitle>PassFlow Totem de Autoatendimento</ApplicationTitle>
     <ApplicationIcon>icon-icons.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Company>RAEVAN TECH GROUP - 33.421.993 ENRIQUE RODRIGUES MARTEL</Company>
+    <Authors>Enrique Rodrigues Martel - RAEVAN TECH GROUP</Authors>
+    <Product>PassFlow PRO - Totem de Autoatendimento</Product>
+    <Description>Terminal Desktop de Autoatendimento e Impressao Termica PassFlow PRO</Description>
+    <Copyright>Copyright (c) 2026 RAEVAN TECH GROUP (CNPJ 33.421.993/0001-24). Todos os direitos reservados.</Copyright>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <NeutralLanguage>pt-BR</NeutralLanguage>
     <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <ItemGroup>

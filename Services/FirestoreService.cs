@@ -22,15 +22,119 @@ namespace PassFlowTotem.Services
             _http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         }
 
+        private static List<string> GetCandidateServerUrls(string? configuredUrl)
+        {
+            var urls = new List<string>();
+            if (!string.IsNullOrWhiteSpace(configuredUrl))
+            {
+                var clean = configuredUrl.Trim().TrimEnd('/');
+                if (!string.IsNullOrWhiteSpace(clean))
+                    urls.Add(clean);
+            }
+            if (!urls.Contains("https://passflow.raevan.com.br", StringComparer.OrdinalIgnoreCase))
+                urls.Add("https://passflow.raevan.com.br");
+            if (!urls.Contains("https://rls-passflow.raevan.com.br", StringComparer.OrdinalIgnoreCase))
+                urls.Add("https://rls-passflow.raevan.com.br");
+            return urls;
+        }
+
         // =========================================================================
-        // 1. PAREAMENTO DIRETO COM A COLEÇÃO 'devices' NO FIRESTORE
+        // 1. PAREAMENTO COM A API DO SERVIDOR PASSFLOW (/api/totem) + FALLBACK FIRESTORE
         // =========================================================================
 
         public async Task<DeviceConfig?> CheckOrRegisterPinAsync(string pin, DeviceConfig currentConfig)
         {
+            var cleanPin = (pin ?? "").Trim().ToUpper();
+            if (string.IsNullOrWhiteSpace(cleanPin)) return null;
+
+            // 1. Prioriza API oficial do Servidor PassFlow (/api/totem?pin=XXXXXX&type=totem)
+            // Funciona mesmo quando o Firestore estiver com cota excedida (429), lendo o store persistente do servidor!
+            foreach (var serverBase in GetCandidateServerUrls(currentConfig?.ServerUrl))
+            {
+                try
+                {
+                    var apiUrl = $"{serverBase}/api/totem?pin={Uri.EscapeDataString(cleanPin)}&type=totem";
+                    var apiResp = await _http.GetAsync(apiUrl);
+                    if (apiResp.IsSuccessStatusCode)
+                    {
+                        var apiJson = await apiResp.Content.ReadAsStringAsync();
+                        using var doc = JsonDocument.Parse(apiJson);
+                        var root = doc.RootElement;
+
+                        var status = root.TryGetProperty("status", out var stProp) && stProp.ValueKind == JsonValueKind.String
+                            ? stProp.GetString() ?? "pending"
+                            : "pending";
+
+                        if (status == "paired")
+                        {
+                            var orgId = root.TryGetProperty("organizationId", out var orgProp) && orgProp.ValueKind == JsonValueKind.String
+                                ? orgProp.GetString() ?? ""
+                                : "";
+                            var unitId = root.TryGetProperty("unitId", out var unitProp) && unitProp.ValueKind == JsonValueKind.String
+                                ? unitProp.GetString() ?? "matriz"
+                                : "matriz";
+
+                            if (!string.IsNullOrWhiteSpace(orgId))
+                            {
+                                var cfg = currentConfig ?? new DeviceConfig();
+                                cfg.ServerUrl = serverBase;
+                                cfg.IsPaired = true;
+                                cfg.Pin = cleanPin;
+                                cfg.OrganizationId = orgId;
+                                cfg.UnitId = string.IsNullOrWhiteSpace(unitId) ? "matriz" : unitId;
+
+                                if (root.TryGetProperty("unitName", out var unProp) && unProp.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(unProp.GetString()))
+                                {
+                                    cfg.UnitName = unProp.GetString()!;
+                                }
+
+                                var allowed = new List<string>();
+                                if (root.TryGetProperty("allowedServices", out var asProp) && asProp.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var item in asProp.EnumerateArray())
+                                    {
+                                        if (item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
+                                            allowed.Add(item.GetString()!);
+                                    }
+                                }
+                                cfg.AllowedServices = allowed;
+
+                                if (root.TryGetProperty("branding", out var brProp) && brProp.ValueKind == JsonValueKind.Object)
+                                {
+                                    if (brProp.TryGetProperty("organizationName", out var onProp) && onProp.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(onProp.GetString()))
+                                        cfg.OrganizationName = onProp.GetString()!;
+                                    if (brProp.TryGetProperty("organizationLogo", out var olProp) && olProp.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(olProp.GetString()))
+                                        cfg.OrganizationLogo = olProp.GetString()!;
+                                    if (brProp.TryGetProperty("primaryColor", out var pcProp) && pcProp.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(pcProp.GetString()))
+                                        cfg.PrimaryColor = HslOrCssToHex(pcProp.GetString()!, "#2563EB");
+                                    if (brProp.TryGetProperty("accentColor", out var acProp) && acProp.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(acProp.GetString()))
+                                        cfg.AccentColor = HslOrCssToHex(acProp.GetString()!, "#10B981");
+                                    if (brProp.TryGetProperty("backgroundColor", out var bcProp) && bcProp.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(bcProp.GetString()))
+                                        cfg.BackgroundColor = HslOrCssToHex(bcProp.GetString()!, "#0F172A");
+                                }
+
+                                return cfg;
+                            }
+                        }
+                        else if (status == "unpaired")
+                        {
+                            var cfg = currentConfig ?? new DeviceConfig();
+                            cfg.IsPaired = false;
+                            cfg.OrganizationId = "";
+                            cfg.UnitId = "";
+                            return cfg;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Aviso CheckOrRegisterPinAsync via API ({serverBase}): {ex.Message}");
+                }
+            }
+
+            // 2. Fallback direto para a coleção 'devices' no Firestore REST
             try
             {
-                var cleanPin = pin.Trim().ToUpper();
                 var url = $"{BaseUrl}/devices/{cleanPin}";
 
                 var getResp = await _http.GetAsync(url);
@@ -47,13 +151,14 @@ namespace PassFlowTotem.Services
                             var unitId = GetStringField(fields, "unitId");
                             var allowedServices = GetArrayField(fields, "allowedServices");
 
-                            currentConfig.IsPaired = true;
-                            currentConfig.Pin = cleanPin;
-                            currentConfig.OrganizationId = orgId;
-                            currentConfig.UnitId = string.IsNullOrWhiteSpace(unitId) ? "matriz" : unitId;
-                            currentConfig.AllowedServices = allowedServices;
+                            var cfg = currentConfig ?? new DeviceConfig();
+                            cfg.IsPaired = true;
+                            cfg.Pin = cleanPin;
+                            cfg.OrganizationId = orgId;
+                            cfg.UnitId = string.IsNullOrWhiteSpace(unitId) ? "matriz" : unitId;
+                            cfg.AllowedServices = allowedServices;
 
-                            return currentConfig;
+                            return cfg;
                         }
                     }
                 }
@@ -86,7 +191,7 @@ namespace PassFlowTotem.Services
         // 2. CARREGAR DADOS DO QUIOSQUE (CATEGORIAS, SERVIÇOS, TIPOS DE SENHA, BRANDING, CUPOM)
         // =========================================================================
 
-        public async Task<(List<Category> categories, List<Service> services, List<TicketType> ticketTypes, TicketPrintConfig printConfig, BrandingInfo branding, string unitName)> LoadKioskDataAsync(string orgId, string unitId)
+        public async Task<(List<Category> categories, List<Service> services, List<TicketType> ticketTypes, TicketPrintConfig printConfig, BrandingInfo branding, string unitName)> LoadKioskDataAsync(string orgId, string unitId, string? serverUrl = null)
         {
             var categories = new List<Category>();
             var services = new List<Service>();
@@ -94,6 +199,78 @@ namespace PassFlowTotem.Services
             var printConfig = new TicketPrintConfig();
             var branding = new BrandingInfo();
             var unitName = "Unidade Matriz";
+
+            var jsonOpts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+            // 1. Prioriza API oficial do Servidor PassFlow (/api/totem?orgId=...&unitId=...)
+            foreach (var serverBase in GetCandidateServerUrls(serverUrl))
+            {
+                try
+                {
+                    var apiUrl = $"{serverBase}/api/totem?orgId={Uri.EscapeDataString(orgId)}&unitId={Uri.EscapeDataString(unitId)}";
+                    var resp = await _http.GetAsync(apiUrl);
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        var json = await resp.Content.ReadAsStringAsync();
+                        using var doc = JsonDocument.Parse(json);
+                        var root = doc.RootElement;
+
+                        if (root.TryGetProperty("success", out var succ) && succ.GetBoolean())
+                        {
+                            if (root.TryGetProperty("categories", out var catElem) && catElem.ValueKind == JsonValueKind.Array)
+                            {
+                                categories = JsonSerializer.Deserialize<List<Category>>(catElem.GetRawText(), jsonOpts) ?? new List<Category>();
+                            }
+
+                            if (root.TryGetProperty("services", out var srvElem) && srvElem.ValueKind == JsonValueKind.Array)
+                            {
+                                services = JsonSerializer.Deserialize<List<Service>>(srvElem.GetRawText(), jsonOpts) ?? new List<Service>();
+                            }
+
+                            if (root.TryGetProperty("ticketTypes", out var ttElem) && ttElem.ValueKind == JsonValueKind.Array)
+                            {
+                                ticketTypes = JsonSerializer.Deserialize<List<TicketType>>(ttElem.GetRawText(), jsonOpts) ?? new List<TicketType>();
+                            }
+
+                            if (root.TryGetProperty("printConfig", out var pcElem) && pcElem.ValueKind == JsonValueKind.Object)
+                            {
+                                printConfig = JsonSerializer.Deserialize<TicketPrintConfig>(pcElem.GetRawText(), jsonOpts) ?? new TicketPrintConfig();
+                            }
+
+                            if (root.TryGetProperty("unitName", out var unElem) && unElem.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(unElem.GetString()))
+                            {
+                                unitName = unElem.GetString()!;
+                            }
+
+                            if (root.TryGetProperty("branding", out var brElem) && brElem.ValueKind == JsonValueKind.Object)
+                            {
+                                if (brElem.TryGetProperty("organizationName", out var onProp) && onProp.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(onProp.GetString()))
+                                    branding.OrganizationName = onProp.GetString()!;
+                                if (brElem.TryGetProperty("organizationLogo", out var olProp) && olProp.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(olProp.GetString()))
+                                    branding.OrganizationLogo = olProp.GetString()!;
+                                if (brElem.TryGetProperty("primaryColor", out var pCol) && pCol.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(pCol.GetString()))
+                                    branding.PrimaryColor = HslOrCssToHex(pCol.GetString()!, "#2563EB");
+                                if (brElem.TryGetProperty("accentColor", out var aCol) && aCol.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(aCol.GetString()))
+                                    branding.AccentColor = HslOrCssToHex(aCol.GetString()!, "#10B981");
+                                if (brElem.TryGetProperty("backgroundColor", out var bCol) && bCol.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(bCol.GetString()))
+                                    branding.BackgroundColor = HslOrCssToHex(bCol.GetString()!, "#0F172A");
+                            }
+
+                            if (ticketTypes.Count == 0)
+                            {
+                                ticketTypes.Add(new TicketType { Id = "type-normal", Name = "Atendimento Convencional", Prefix = "A", PriorityWeight = 1, Icon = "User", Description = "Atendimento padrão por ordem de chegada" });
+                                ticketTypes.Add(new TicketType { Id = "type-pref", Name = "Atendimento Prioritário", Prefix = "P", PriorityWeight = 5, Icon = "Heart", Description = "Lei 10.048/2000: Idosos (60+), PCD, Gestantes, Lactantes e TEA" });
+                            }
+
+                            return (categories, services, ticketTypes, printConfig ?? new TicketPrintConfig(), branding, unitName);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Aviso LoadKioskDataAsync via API ({serverBase}): {ex.Message}");
+                }
+            }
 
             try
             {

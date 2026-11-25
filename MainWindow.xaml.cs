@@ -191,8 +191,19 @@ namespace PassFlowTotem
                 if (!string.IsNullOrWhiteSpace(_device.Pin))
                 {
                     var paired = await _firestoreService.CheckOrRegisterPinAsync(_device.Pin, _device);
-                    if (paired != null && paired.IsPaired)
+                    if (paired != null)
                     {
+                        if (!paired.IsPaired)
+                        {
+                            _device.IsPaired = false;
+                            _device.OrganizationId = "";
+                            _device.UnitId = "";
+                            _device.Pin = GenerateNewPin();
+                            _configService.Save(_device);
+                            await StartPairingModeAsync();
+                            return;
+                        }
+
                         _device.AllowedServices = paired.AllowedServices;
                         _device.OrganizationId = paired.OrganizationId;
                         _device.UnitId = paired.UnitId;
@@ -211,7 +222,7 @@ namespace PassFlowTotem
         private async Task LoadServerDataAsync()
         {
             var (categories, services, ticketTypes, printConfig, branding, unitName) =
-                await _firestoreService.LoadKioskDataAsync(_device.OrganizationId, _device.UnitId);
+                await _firestoreService.LoadKioskDataAsync(_device.OrganizationId, _device.UnitId, _device.ServerUrl);
 
             _categories = categories;
             _services = services;
@@ -401,9 +412,7 @@ namespace PassFlowTotem
 
             foreach (var srv in availableServices)
             {
-                var desc = srv.SubServices != null && srv.SubServices.Count > 0
-                    ? "Possui opções adicionais"
-                    : "Toque para emitir senha";
+                const string desc = "Toque para selecionar";
 
                 var btn = CreateTouchCard(srv.Name, desc, srv.Icon, () =>
                 {
